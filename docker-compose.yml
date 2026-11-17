@@ -1,0 +1,18 @@
+# Fortress Oil & Gas Helpdesk
+#   1. cp .env.example .env      (then edit it: at least COMPANY_EMAIL_DOMAIN and ADMIN_EMAIL)
+#   2. docker compose up -d --build
+#   3. open http://localhost:3000        (staff: /agent and /admin)
+services:
+  helpdesk:
+    build: .
+    image: fortress-helpdesk:latest
+    container_name: fortress-helpdesk
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    env_file: .env
+    volumes:
+      - helpdesk-data:/data   # the database + session key. Back this up (see README).
+
+volumes:
+  helpdesk-data:

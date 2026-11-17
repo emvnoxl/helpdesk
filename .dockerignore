@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-server
+data
+tmp
+tests
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.gitattributes
+.vscode
+.github
+*.log
+README.md
+CLAUDE.md

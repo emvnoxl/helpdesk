@@ -1,0 +1,5 @@
+# One line-ending style in the repository, whatever the developer's OS (the Dockerfile in particular must be LF).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.woff2 binary

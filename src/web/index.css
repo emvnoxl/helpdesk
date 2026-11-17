@@ -1,0 +1,337 @@
+@import "tailwindcss";
+
+/* Brand tokens taken from the Fortress logo: black wordmark + green / amber / red marks. */
+/* `dark:` utilities apply whenever <html> carries the theme-dark class. */
+@custom-variant dark (&:where(.theme-dark, .theme-dark *));
+
+@theme {
+  /* Meaning-based colours that flip with the theme. Light values here; dark values under html.theme-dark below. */
+  --color-surface: #ffffff;   /* cards, inputs, headers */
+  --color-page: #fafaf9;      /* the page behind the cards */
+  --color-fg: #0b0b0b;        /* normal text */
+  --color-ok: #007a3d;        /* green TEXT and icons on surfaces (brand green is for fills); dark value below */
+  --font-sans: "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --color-ink: #0b0b0b;
+  --color-brand-green: #00a859;
+  --color-brand-amber: #ffb400;
+  --color-brand-red: #ee3239;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Signature three-colour stripe, echoing the logo's boxes */
+.brand-stripe {
+  height: 4px;
+  background: linear-gradient(90deg, var(--color-brand-green) 0 33.33%, var(--color-brand-amber) 33.33% 66.66%, var(--color-brand-red) 66.66% 100%);
+}
+
+/* Data-viz / live-board themes. Every colour a chart or the board uses is a variable here,
+   so the same components render correctly in light and dark. Series colours are the validated
+   categorical slots 1 (blue) and 3 (aqua) for each surface. */
+.theme-dark {
+  color-scheme: dark;
+  --v-page: #0d0d0d;
+  --v-head: #121211;
+  --v-surface: #1a1a19;
+  --v-border: rgba(255, 255, 255, 0.1);
+  --v-grid: #2c2c2a;
+  --v-axis: #383835;
+  --v-ink: #f0efec;
+  --v-ink2: #c3c2b7;
+  --v-muted: #898781;
+  --v-created: #3987e5;
+  --v-resolved: #199e70;
+  --v-late: #e66767;
+  --v-warn: #fab219;
+  --v-tip: #0d0d0d;
+  --glow-now: #2bd67b;
+}
+.theme-light {
+  color-scheme: light;
+  --v-page: #f4f3ef;
+  --v-head: #ffffff;
+  --v-surface: #ffffff;
+  --v-border: rgba(11, 11, 11, 0.1);
+  --v-grid: #e8e7e1;
+  --v-axis: #c3c2b7;
+  --v-ink: #0b0b0b;
+  --v-ink2: #52514e;
+  --v-muted: #6b6a65;
+  --v-created: #2a78d6;
+  --v-resolved: #139768;
+  --v-late: #c62f2f;
+  --v-warn: #a35a00;
+  --v-tip: #ffffff;
+  --glow-now: #00a859;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.live-dot { animation: live-pulse 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion. All of it is switched off for people who prefer reduced motion (see the bottom of this block). */
+
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+/* A whole page / tab panel easing in. Give the element a `key` that changes with the page so it replays. */
+.page-in { animation: page-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+/* List items and cards cascading in: set style={{ "--i": index }} on each. */
+.rise-in { animation: rise-in 420ms cubic-bezier(0.22, 0.61, 0.36, 1) both; animation-delay: calc(min(var(--i, 0), 12) * 55ms); }
+
+/* The sliding bar under the active tab */
+.tab-indicator {
+  transition: left 340ms cubic-bezier(0.22, 0.61, 0.36, 1), width 340ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 200ms;
+}
+
+/* ---- "Being worked on right now" highlight ----
+   A calm breathing glow that sits well on both light and dark surfaces:
+   - a steady ring, a soft green tint and a slim accent bar mark the row or card;
+   - only a pseudo-element's OPACITY animates, which is cheap to paint and fine on an always-on wall display;
+   - the blur is kept small so panels with overflow:hidden never clip it. */
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.2; }
+  50%      { opacity: 1; }
+}
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40%           { transform: translateY(-4px); opacity: 1; }
+}
+@keyframes ping-ring {
+  0%   { transform: scale(1); opacity: 0.7; }
+  80%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+.glow-now {
+  --glow: var(--glow-now, var(--color-brand-green));
+  position: relative;
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--glow) 14%, transparent), color-mix(in srgb, var(--glow) 3%, transparent) 75%);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--glow) 58%, transparent);
+}
+.glow-now::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: var(--glow);
+}
+.glow-now::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 14px 1px color-mix(in srgb, var(--glow) 62%, transparent), inset 0 0 12px color-mix(in srgb, var(--glow) 18%, transparent);
+  animation: glow-breathe 3.4s ease-in-out infinite;
+  will-change: opacity;
+}
+/* Other work in progress: a quiet, steady amber outline. No animation. */
+.glow-soft {
+  --glow: var(--color-brand-amber);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glow) 50%, transparent);
+}
+
+.working-dots { display: inline-flex; align-items: center; }
+.working-dots i {
+  display: inline-block; width: 5px; height: 5px; margin-left: 3px; border-radius: 9999px; background: currentColor;
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+.working-dots i:nth-child(2) { animation-delay: 0.15s; }
+.working-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+.now-dot { position: relative; display: inline-block; width: 8px; height: 8px; border-radius: 9999px; background: var(--color-brand-green); }
+.now-dot::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit;
+  animation: ping-ring 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-in, .rise-in { animation: none; }
+  .tab-indicator { transition: none; }
+  /* keep the highlight, just hold it still */
+  .glow-now::after { animation: none; opacity: 0.7; }
+  .working-dots i { animation: none; opacity: 0.8; margin-left: 3px; }
+  .now-dot::before { animation: none; display: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbars: always present, slim, and the same on every page.
+   Without this the page scrollbar appears only on long pages, so switching between a short and a long page makes
+   everything jump sideways by the scrollbar's width. `overflow-y: scroll` keeps the track permanently, and the
+   track colour follows the screen (light by default, dark on the sign-in screens and the dark Live board). */
+html {
+  overflow-y: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-stone-300) var(--color-page);
+}
+html[data-tone="dark"] {
+  scrollbar-color: #55554f #0b0b0b;
+  background: #0b0b0b;
+}
+/* Tables and panels that scroll on their own get the same slim look. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-stone-300) transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dark theme (app-wide). Applied by adding .theme-dark to <html> (see theme.tsx). */
+html.theme-dark {
+  --color-surface: #1a1a19;
+  --color-page: #0e0e0d;
+  --color-fg: #f0efec;
+  --color-ok: #3ddc8a;
+
+  /* neutrals: fills, hairlines, muted text */
+  --color-stone-50: #222220;
+  --color-stone-100: #2a2a28;
+  --color-stone-200: #353531;
+  --color-stone-300: #46463f;
+  --color-stone-400: #5c5c55;
+  --color-stone-600: #b9b9b1;
+  --color-neutral-400: #8c8c85;
+  --color-neutral-500: #a6a69f;
+  --color-neutral-600: #c0c0b8;
+  --color-neutral-700: #d7d7cf;
+
+  /* status tints: light fill + dark text become dark fill + light text */
+  --color-red-50: #3b1616;     --color-red-300: #8a2f2f;     --color-red-700: #f2a6a6;     --color-red-800: #f8c0c0;
+  --color-orange-50: #3a2111;  --color-orange-300: #84501f;  --color-orange-800: #f9cba6;
+  --color-amber-50: #38290c;   --color-amber-200: #6e4f12;   --color-amber-300: #85621a;   --color-amber-800: #f6d78e;  --color-amber-900: #f8e0aa;
+  --color-green-50: #10301d;   --color-green-300: #226f40;   --color-green-800: #a0e8bc;
+  --color-emerald-50: #0e3125; --color-emerald-300: #1f7e5f; --color-emerald-800: #a4ead2;
+  --color-sky-50: #102a3b;     --color-sky-300: #2670a0;     --color-sky-800: #aadaf4;
+  --color-indigo-50: #1e2243;  --color-indigo-300: #4d55b0;  --color-indigo-800: #bcc0f6;
+  --color-purple-50: #2c1b42;  --color-purple-300: #6f44ad;  --color-purple-800: #d5bcf6;
+}
+
+html { background: var(--color-page); }
+input, select, textarea { color: var(--color-fg); }
+
+/* ---- the smooth light <-> dark cross-fade ----
+   theme.tsx adds .theme-fade to <html> for a moment around a switch. Only colour properties are transitioned, so
+   layout and the entrance animations are untouched. */
+html.theme-fade,
+html.theme-fade *,
+html.theme-fade *::before,
+html.theme-fade *::after {
+  transition: background-color 380ms ease, color 380ms ease, border-color 380ms ease, fill 380ms ease, stroke 380ms ease,
+    box-shadow 380ms ease, outline-color 380ms ease, text-decoration-color 380ms ease !important;
+}
+
+/* ---- branded dialogs and toasts (notify.tsx) ---- */
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: none; }
+}
+.dialog-in   { animation: dialog-in 240ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+.backdrop-in { animation: backdrop-in 200ms ease both; }
+.toast-in    { animation: toast-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .dialog-in, .backdrop-in, .toast-in { animation: none; }
+  html.theme-fade, html.theme-fade *, html.theme-fade *::before, html.theme-fade *::after { transition: none !important; }
+}
+
+@keyframes icon-in {
+  from { opacity: 0; transform: rotate(-70deg) scale(0.6); }
+  to   { opacity: 1; transform: none; }
+}
+.icon-in { animation: icon-in 360ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .icon-in { animation: none; } }
+
+/* The faintest label grey (neutral-400) was only 2.6:1 on white. Darken it in light mode so footers, counters and hints are readable;
+   in dark mode the override above already gives ~5:1. */
+html.theme-light { --color-neutral-400: #757575; }
+
+@keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.msg-in { animation: msg-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .msg-in { animation: none; } }
+
+@keyframes bell-ring { 0%, 100% { transform: rotate(0); } 15% { transform: rotate(16deg); } 35% { transform: rotate(-14deg); } 55% { transform: rotate(9deg); } 75% { transform: rotate(-6deg); } }
+.bell-ring { transform-origin: 50% 0; animation: bell-ring 700ms ease-in-out; }
+@media (prefers-reduced-motion: reduce) { .bell-ring { animation: none; } }
+
+/* "Up next": the row that is YOUR ticket. Same language as the current-task glow, but it only ever paints inside the row (the list
+   clips its edges), so there is no outer halo: a tint, a green bar, an inner ring that breathes, and a slow light sweep. */
+@keyframes row-sweep { 0% { transform: translateX(-110%); } 60%, 100% { transform: translateX(290%); } }
+.glow-row {
+  --glow: var(--glow-now, var(--color-brand-green));
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--glow) 16%, transparent), color-mix(in srgb, var(--glow) 4%, transparent) 80%);
+  overflow: hidden;
+}
+.glow-row::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--glow);
+}
+.glow-row::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--glow) 70%, transparent), inset 0 0 16px color-mix(in srgb, var(--glow) 26%, transparent);
+  animation: glow-breathe 3.4s ease-in-out infinite;
+}
+.glow-row > * { position: relative; z-index: 1; }
+.glow-row > .row-sheen {
+  position: absolute; top: 0; bottom: 0; left: 0; z-index: 0; width: 40%; pointer-events: none;
+  background: linear-gradient(100deg, transparent, color-mix(in srgb, var(--glow) 22%, transparent), transparent);
+  animation: row-sweep 4.8s ease-in-out infinite;
+}
+.you-pulse { animation: you-pulse 2.4s ease-in-out infinite; }
+@keyframes you-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--glow-now, #00a859) 55%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .glow-row::after { animation: none; opacity: 0.8; }
+  .glow-row > .row-sheen, .you-pulse { animation: none; display: none; }
+}
+
+/* Reports: print / save as PDF. Only the report prints: no portal header, tabs, buttons or footer. */
+@media print {
+  header, footer, nav, .no-print { display: none !important; }
+  html, body { background: #fff !important; }
+  main, .page-in { padding: 0 !important; animation: none !important; }
+  .print-keep, section, li { break-inside: avoid; }
+  * { box-shadow: none !important; }
+  .rise-in, .msg-in { animation: none !important; opacity: 1 !important; }
+  @page { margin: 12mm; }
+}
+
+/* PIN entry: caret blink and a short shake on a wrong PIN. */
+@keyframes pin-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.pin-caret { animation: pin-caret 1s steps(1) infinite; }
+@keyframes pin-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+.pin-shake { animation: pin-shake 380ms ease-in-out; }
+@media (prefers-reduced-motion: reduce) { .pin-caret { animation: none; } .pin-shake { animation: none; } }
+
+/* Computer details drawer slides in from the right. */
+@keyframes drawer-in { from { transform: translateX(32px); opacity: 0; } to { transform: none; opacity: 1; } }
+.drawer-in { animation: drawer-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .drawer-in { animation: none; } }
+
+/* Incoming call: the green phone breathes. */
+@keyframes call-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgb(0 168 89 / 0.6); } 60% { box-shadow: 0 0 0 14px rgb(0 168 89 / 0); } }
+.call-pulse { animation: call-pulse 1.4s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .call-pulse { animation: none; } }
+
+/* Tour: the typing caret in the "submit a ticket" picture. */
+.tour-caret { animation: pin-caret 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .tour-caret { animation: none; } }

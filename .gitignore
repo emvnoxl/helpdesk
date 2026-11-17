@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-server
+data
+tmp
+.env
+.env.*
+!.env.example
+*.log
+*.db
+*.db-shm
+*.db-wal
+.vscode
+.idea
+.DS_Store
+Thumbs.db
