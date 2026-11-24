@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api } from "./api";
 import { BrandMark, Logo } from "./brand";
 import { usePageTone } from "./tone";
 import { ThemeToggle } from "./ThemeToggle";
 import { btn, field } from "./ui";
+import { loginError } from "./deeplink";
+import { OrDivider, SsoButton, ssoErrorText, useSso } from "./sso";
 import { clock } from "./useStaff";
 
 export type Portal = "agent" | "admin";
@@ -14,8 +16,22 @@ const COPY: Record<Portal, { badge: string; title: string; text: string }> = {
 };
 
 /** Full-screen sign-in for the agent and admin portals. Accounts are created by an admin; there is no self sign-up. */
+/** With Microsoft sign-in on: agents see only the Microsoft button; admins also get a local password tucked away as the way back in. */
+function LocalGate({ mode, children }: { mode: "show" | "hide" | "details"; children: ReactNode }) {
+  if (mode === "hide") return null;
+  if (mode === "show") return <>{children}</>;
+  return (
+    <details className="rounded-xl border border-fg/15">
+      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-fg">Use a local admin password instead</summary>
+      <div className="space-y-5 border-t border-fg/10 p-4">{children}</div>
+    </details>
+  );
+}
+
 export function StaffLogin({ portal, display, onDone }: { portal: Portal; display?: boolean; onDone: () => void }) {
   usePageTone("dark");
+  const sso = useSso();
+  const gate = !sso?.available ? "show" : sso.enforced ? (portal === "admin" ? "details" : "hide") : "show";
   const copy = COPY[portal];
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -55,8 +71,18 @@ export function StaffLogin({ portal, display, onDone }: { portal: Portal; displa
           </div>
           <div>
             <h1 className="text-2xl font-extrabold">{display ? "Sign in to the live board" : copy.title}</h1>
-            <p className="mt-1 text-sm text-neutral-500">{copy.text}</p>
+            <p className="mt-1 text-sm text-neutral-500">{sso?.available ? (portal === "admin" ? "Sign in with your company Microsoft 365 account. You must be an admin here." : "Sign in with your company Microsoft 365 account. An admin has to add you under Staff first.") : copy.text}</p>
           </div>
+
+          {loginError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{ssoErrorText(loginError)}</p>}
+          {sso?.available && (
+            <div className="space-y-4">
+              <SsoButton portal={portal} />
+              {gate === "show" && <OrDivider text="or use a password" />}
+            </div>
+          )}
+
+          <LocalGate mode={gate}>
 
           <label className="block text-sm font-semibold">
             Email
@@ -78,6 +104,7 @@ export function StaffLogin({ portal, display, onDone }: { portal: Portal; displa
           {err && !lockedNow && <p role="alert" className="text-sm text-red-700">{err}{left !== null && left > 0 ? ` ${left} ${left === 1 ? "try" : "tries"} left.` : ""}</p>}
 
           <button className={btn + " w-full py-2.5"} disabled={busy || lockedNow || !pw || !email}>{busy ? "Checking…" : "Sign in"}</button>
+          </LocalGate>
           <p className="text-center text-xs text-neutral-500">Forgot your password? Ask an admin to reset it. <a className="font-semibold underline" href="/">Back to the helpdesk</a></p>
         </form>
       </div>

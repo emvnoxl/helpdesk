@@ -14,7 +14,7 @@ const ago = (ts: number) => {
   return `${Math.floor(s / 86400)}d ago`;
 };
 // When several arrive at once, play only the most important sound.
-const RANK: Chime[] = ["sla_breach", "call_request", "new_ticket", "assigned", "message", "sla_warn", "note", "status"];
+const RANK: Chime[] = ["sla_breach", "alert", "call_request", "new_ticket", "assigned", "message", "sla_warn", "note", "update", "status"];
 
 const KIND_STYLE: Record<string, string> = {
   new_ticket: "bg-brand-green text-ink",
@@ -26,8 +26,12 @@ const KIND_STYLE: Record<string, string> = {
   sla_breach: "bg-[#d92b33] text-white",
   call_request: "bg-brand-green text-ink",
   call: "bg-stone-200 text-neutral-700",
+  update: "bg-brand-green text-ink",
+  alert: "bg-[#d92b33] text-white",
 };
 const KIND_ICON: Record<string, string> = {
+  update: "M12 3v12M7 10l5 5 5-5M5 21h14",
+  alert: "M12 8v5M12 17h.01M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z",
   new_ticket: "M12 5v14M5 12h14",
   assigned: "M5 12h14M13 6l6 6-6 6",
   message: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z",
@@ -82,7 +86,7 @@ export function NotificationBell({ base, onOpen, viewing = null, tone = "light" 
         setRing((n) => n + 1);
         const first = loud[0]!;
         const extra = loud.length > 1 ? ` (+${loud.length - 1} more)` : "";
-        toast(first.body + extra, "info", first.title, () => { openRef.current(first.ticket_id!); void markRead({ ids: loud.map((l) => l.id) }); void load(); });
+        toast(first.body + extra, "info", first.title, () => { if (first.ticket_id) openRef.current(first.ticket_id); void markRead({ ids: loud.map((l) => l.id) }); void load(); });
         if (document.hidden && perm === "granted") {
           try {
             const n = new Notification(first.title, { body: first.body, tag: "fg-" + first.id });

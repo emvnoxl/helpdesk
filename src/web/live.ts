@@ -1,4 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { applySystem } from "./system";
 
 /* Instant updates. The server pushes a tiny "something changed" over a Server-Sent Events stream (see src/server/bus.ts) and each
    screen re-fetches through its own authorised API. Browsers allow only ~6 connections per site over plain HTTP, so every tab shares
@@ -35,7 +36,9 @@ function connect(path: string, hub: Hub) {
   es.addEventListener("change", fire("change"));
   es.addEventListener("audit", fire("audit"));
   es.addEventListener("call", fire("call")); // someone is ringing, answered or hung up (Calls.tsx)
-  es.addEventListener("hello", () => {
+  es.addEventListener("system", (e) => { try { applySystem(JSON.parse((e as MessageEvent).data || "{}")); } catch { /* ignore */ } }); // update announced / server restarting
+  es.addEventListener("hello", (e) => {
+    try { applySystem(JSON.parse((e as MessageEvent).data || "{}")); } catch { /* an old server sends {} */ }
     // After a reconnect, catch up on whatever was missed while the stream was down.
     if (hub.opened) hub.handlers.forEach((h) => h("open", {}));
     hub.opened = true;

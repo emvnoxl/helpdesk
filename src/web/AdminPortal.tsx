@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Dashboard } from "./Dashboard";
+import { deepLinkTicket } from "./deeplink";
 import { PortalFrame } from "./PortalFrame";
 import { PasswordChangeScreen, StaffLogin } from "./StaffLogin";
 import { StaffConsole } from "./StaffConsole";
@@ -17,7 +18,7 @@ export function AdminPortal() {
   const boardTab = location.hash === "#board";
   const { state, refresh, signOut } = useStaff();
   const [view, setView] = useState<"console" | "board">(display || boardTab ? "board" : "console");
-  const [ticket, setTicket] = useState<number | null>(null);
+  const [ticket, setTicket] = useState<number | null>(deepLinkTicket);
 
   if (state.status === "loading") return <div className="min-h-screen bg-ink" />;
   if (state.status === "out" || state.user.role !== "admin") return <StaffLogin portal="admin" display={display} onDone={() => void refresh()} />;

@@ -1,12 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { ApiError, api } from "./api";
+import { EmailSwitch } from "./EmailSwitch";
+import { useSso } from "./sso";
 import { useNotify } from "./notify";
 import { PIN_LENGTH, PinInput } from "./PinInput";
 import { ThisComputer } from "./ThisComputer";
 import { btn, card } from "./ui";
 
 /** A normal user's own page: set or change the PIN, and sign out of every other computer. */
-export function Account({ name, email, hasPin, onChanged }: { name: string; email: string; hasPin: boolean; onChanged: () => void }) {
+export function Account({ name, email, hasPin, emailNotify, msLinked, jobTitle, department, onChanged }: { name: string; email: string; hasPin: boolean; emailNotify: boolean; msLinked: boolean; jobTitle: string | null; department: string | null; onChanged: () => void }) {
+  const enforced = !!useSso()?.enforced; // Microsoft 365 is the only way in: no PIN to manage
   const { toast, confirm } = useNotify();
   const [cur, setCur] = useState("");
   const [pin, setPin] = useState("");
@@ -52,6 +55,14 @@ export function Account({ name, email, hasPin, onChanged }: { name: string; emai
 
   return (
     <div className="grid max-w-5xl gap-6 lg:grid-cols-2">
+      {enforced ? (
+        <section className={card + " space-y-3"}>
+          <h2 className="text-lg font-extrabold">Signed in with Microsoft 365</h2>
+          <p className="text-sm text-neutral-500">Your helpdesk account is your company Microsoft account, so there is no PIN to remember. Your password, multi-factor sign-in and any lock-out are handled by Microsoft.</p>
+          {(jobTitle || department) && <p className="text-sm"><b>{[jobTitle, department].filter(Boolean).join(" · ")}</b><span className="text-neutral-500"> (from Microsoft 365)</span></p>}
+          {!msLinked && <p className="text-sm text-neutral-500">Your next Microsoft sign-in links this account.</p>}
+        </section>
+      ) : (
       <section className={card + " space-y-5"}>
         <div>
           <h2 className="text-lg font-extrabold">{hasPin ? "Change your PIN" : "Create a PIN"}</h2>
@@ -69,6 +80,7 @@ export function Account({ name, email, hasPin, onChanged }: { name: string; emai
           <button className={btn} disabled={busy || !matches || (hasPin && cur.length < PIN_LENGTH)}>{busy ? "Saving…" : hasPin ? "Change PIN" : "Create PIN"}</button>
         </form>
       </section>
+      )}
 
       <div className="space-y-6">
         <section className={card + " space-y-1"}>
@@ -76,6 +88,8 @@ export function Account({ name, email, hasPin, onChanged }: { name: string; emai
           <p className="text-sm"><b>{name}</b></p>
           <p className="text-sm text-neutral-500">{email}</p>
         </section>
+        <EmailSwitch initial={emailNotify} title="Emails about my tickets" text="We email you when IT replies, takes your ticket, or changes its status. Switch this off if you would rather just check the helpdesk."
+          save={(on) => api("/me/preferences", { method: "PATCH", json: { email_notify: on } })} />
         <ThisComputer />
         <section className={card + " space-y-3"}>
           <div>

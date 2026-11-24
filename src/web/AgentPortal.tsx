@@ -3,13 +3,14 @@ import { PortalFrame } from "./PortalFrame";
 import { PasswordChangeScreen, StaffLogin } from "./StaffLogin";
 import { StaffConsole } from "./StaffConsole";
 import { TicketView } from "./TicketView";
+import { deepLinkTicket } from "./deeplink";
 import { btnGhost } from "./ui";
 import { useStaff } from "./useStaff";
 
 /** /agent: the agents' own place, with its own sign-in. Their queue, triage and every ticket. */
 export function AgentPortal() {
   const { state, refresh, signOut } = useStaff();
-  const [ticket, setTicket] = useState<number | null>(null);
+  const [ticket, setTicket] = useState<number | null>(deepLinkTicket);
 
   if (state.status === "loading") return <div className="min-h-screen bg-ink" />;
   // Signed out, or signed in as someone else's kind of account (e.g. an admin): show this portal's own login.

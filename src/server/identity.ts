@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { type AppEnv, clientIp, endUserSession, requesterAuth, startUserSession, userSessionId } from "./auth";
 import { audit } from "./audit";
 import { changed } from "./bus";
-import { config } from "./config";
+import { config, ssoEnforced } from "./config";
 import { db } from "./db";
 import { RateLimiter, hashPassword, verifyPassword } from "./security";
 
@@ -33,6 +33,8 @@ export function pinProblem(pin: unknown): string | null {
 interface Row { id: number; name: string; role: string; active: number; pin_hash: string | null; session_version: number; failed_attempts: number; locked_until: number }
 
 identity.post("/identify", async (c) => {
+  // Once Microsoft 365 sign-in is switched on for everyone, names and PINs are no longer a way in.
+  if (ssoEnforced()) return c.json({ error: "sso_required" }, 403);
   if (!limiter.take(clientIp(c))) return c.json({ error: "Too many attempts. Please wait a few minutes and try again." }, 429);
   const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 100) : "";
@@ -122,8 +124,17 @@ identity.post("/signout", async (c) => {
 
 identity.get("/me", requesterAuth, async (c) => {
   const { id, name, email } = c.get("user");
-  const p = await db.prepare("SELECT pin_hash IS NOT NULL AS has_pin FROM users WHERE id = ?").bind(id).first<{ has_pin: number }>();
-  return c.json({ id, name, email, has_pin: !!p?.has_pin });
+  const p = await db.prepare("SELECT pin_hash IS NOT NULL AS has_pin, email_notify, ms_oid IS NOT NULL AS ms_linked, job_title, department FROM users WHERE id = ?").bind(id).first<{ has_pin: number; email_notify: number; ms_linked: number; job_title: string | null; department: string | null }>();
+  return c.json({ id, name, email, has_pin: !!p?.has_pin, email_notify: p?.email_notify !== 0, ms_linked: !!p?.ms_linked, job_title: p?.job_title ?? null, department: p?.department ?? null });
+});
+
+// { email_notify: boolean }: whether ticket updates are emailed to this person.
+identity.patch("/me/preferences", requesterAuth, async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  if (typeof body.email_notify !== "boolean") return c.json({ error: "nothing to change" }, 400);
+  await db.prepare("UPDATE users SET email_notify = ? WHERE id = ?").bind(body.email_notify ? 1 : 0, c.get("user").id).run();
+  await audit(c, "account.email_notify", "account", body.email_notify ? "Switched ticket emails on" : "Switched ticket emails off");
+  return c.json({ email_notify: body.email_notify });
 });
 
 /* ---- the signed-in person managing their own PIN ---- */

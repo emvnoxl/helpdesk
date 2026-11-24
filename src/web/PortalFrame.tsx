@@ -1,6 +1,8 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { Logo } from "./brand";
+import { EmailSwitch } from "./EmailSwitch";
+import { useSso } from "./sso";
 import { btn, card, field } from "./ui";
 import { useNotify } from "./notify";
 import { ThemeToggle } from "./ThemeToggle";
@@ -17,6 +19,8 @@ export function PortalFrame({
   onOpenTicket: (id: number) => void; viewing: number | null; children: ReactNode;
 }) {
   const [panel, setPanel] = useState(false);
+  const sso = useSso();
+  const noPassword = !!sso?.enforced && portal === "agent"; // agents sign in with Microsoft only
   const [name, setName] = useState(user.name);
   const [cur, setCur] = useState("");
   const [pw, setPw] = useState("");
@@ -97,13 +101,15 @@ export function PortalFrame({
               <input className={field} value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required />
               <button className={btn}>Save name</button>
             </form>
-            <form onSubmit={changePassword} className={card + " space-y-3"}>
+            {!noPassword && <form onSubmit={changePassword} className={card + " space-y-3"}>
               <h2 className="font-bold">Change password</h2>
               <input className={field} type="password" autoComplete="current-password" placeholder="Current password" value={cur} onChange={(e) => setCur(e.target.value)} required />
               <input className={field} type="password" autoComplete="new-password" placeholder={`New password (${MIN}+ characters)`} value={pw} onChange={(e) => setPw(e.target.value)} minLength={MIN} required />
               <input className={field} type="password" autoComplete="new-password" placeholder="Repeat new password" value={pw2} onChange={(e) => setPw2(e.target.value)} required />
               <button className={btn}>Save new password</button>
-            </form>
+            </form>}
+            <EmailSwitch initial={user.email_notify} title="Emails for me" text="Get an email when a ticket needs you: a new ticket, one assigned to you, a reply from a requester, or a late ticket. Only things you have not already seen in the helpdesk, and several at once come as one email."
+              save={(on) => api("/staff/profile", { method: "PATCH", json: { email_notify: on } })} />
           </div>
         )}
         {children}

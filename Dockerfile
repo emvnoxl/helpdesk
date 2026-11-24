@@ -6,7 +6,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json vite.config.ts ./
+COPY scripts ./scripts
 COPY src ./src
+# Optional: docker compose build --build-arg BUILD_ID=$(git rev-parse --short HEAD) so the version shows the commit.
+ARG BUILD_ID=
+ARG BUILD_NOTE=
 RUN npm run build
 
 # ---- run: just the built files and production dependencies ----

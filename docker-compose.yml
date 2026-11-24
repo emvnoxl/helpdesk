@@ -4,7 +4,12 @@
 #   3. open http://localhost:3000        (staff: /agent and /admin)
 services:
   helpdesk:
-    build: .
+    build:
+      context: .
+      args:
+        # Optional: BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build   (shown as the version in Admin > System)
+        BUILD_ID: ${BUILD_ID:-}
+        BUILD_NOTE: ${BUILD_NOTE:-}
     image: fortress-helpdesk:latest
     container_name: fortress-helpdesk
     restart: unless-stopped
@@ -13,6 +18,8 @@ services:
     env_file: .env
     volumes:
       - helpdesk-data:/data   # the database + session key. Back this up (see README).
+      # Backups on another disk or a NAS share (then set BACKUP_DIR=/backups in .env). Use your own path on the left:
+      # - /volume1/backups/helpdesk:/backups
 
 volumes:
   helpdesk-data:

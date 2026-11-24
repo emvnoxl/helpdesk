@@ -16,6 +16,13 @@ export function changed(ticketId?: number) {
   const data = JSON.stringify(ticketId ? { ticket: ticketId } : {});
   for (const s of subs) s.send("change", data);
 }
+/** Everyone with a stream open (system notices: an update was announced, the server is restarting). */
+export function broadcast(event: string, data: string) {
+  for (const s of subs) s.send(event, data);
+}
+let helloData: () => string = () => "{}";
+/** What the first message of every stream carries (the server version and any announced update: see system.ts). */
+export const setHello = (fn: () => string) => { helloData = fn; };
 /** A new line in the activity log (admins only). */
 export function audited() {
   for (const s of subs) if (s.admin) s.send("audit", "{}");
@@ -48,7 +55,7 @@ stream.get("/", (c) => {
     const sub: Sub = { admin, key, send: (event, data) => void s.writeSSE({ event, data }).catch(() => {}) };
     subs.add(sub);
     s.onAbort(() => gone(sub));
-    await s.writeSSE({ event: "hello", data: "{}", retry: 3000 });
+    await s.writeSSE({ event: "hello", data: helloData(), retry: 3000 });
     const until = Date.now() + MAX_LIFE_MS;
     while (!s.aborted && Date.now() < until) {
       await s.sleep(20_000);

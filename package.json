@@ -10,7 +10,7 @@
     "dev": "vite --host 127.0.0.1",
     "dev:server": "tsx watch src/server/index.ts",
     "build:web": "vite build",
-    "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node24 --packages=external --external:node:sqlite --outfile=dist-server/index.js",
+    "build:server": "node scripts/build-server.mjs",
     "build": "npm run build:web && npm run build:server",
     "serve": "node dist-server/index.js",
     "start": "npm run build && node dist-server/index.js",

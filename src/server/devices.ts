@@ -89,12 +89,20 @@ devices.get("/mine", requesterAuth, async (c) => {
 });
 
 /* ---------- the optional full hardware report ---------- */
-const baseUrl = (c: { req: { url: string; header: (n: string) => string | undefined } }) => {
-  if (config.appUrl) return config.appUrl;
+type Cx = { req: { url: string; header: (n: string) => string | undefined } };
+/** The address the person is using right now: by definition their computer can reach it. */
+export const requestUrl = (c: Cx) => {
   const u = new URL(c.req.url);
   const proto = config.trustProxy ? c.req.header("x-forwarded-proto") ?? u.protocol.replace(":", "") : u.protocol.replace(":", "");
   return `${proto}://${config.trustProxy ? c.req.header("x-forwarded-host") ?? u.host : u.host}`;
 };
+const SAFE_URL = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/;
+/**
+ * Every address the report script may try, best first: the one in the browser's address bar (so a changed IP or a new name
+ * just works), then APP_URL, then ALT_URLS. The first that answers wins. Anything odd is dropped: these go into a script.
+ */
+const candidateUrls = (c: Cx): string[] => [...new Set([requestUrl(c), config.appUrl, ...config.altUrls].filter((u) => u && SAFE_URL.test(u)))];
+const baseUrl = (c: Cx) => candidateUrls(c)[0] ?? config.appUrl;
 
 // The signed-in person asks for a link for THIS computer (identified by the browser's key).
 devices.post("/inventory-link", requesterAuth, async (c) => {
@@ -120,10 +128,10 @@ devices.post("/inventory-link", requesterAuth, async (c) => {
 const valid = (t: unknown) => (typeof t === "string" && t.length < 400 ? readToken<{ k: string; d: number; e: number }>(t, SECRET) : null);
 
 /** The PowerShell. ASCII only and PowerShell 5.1 compatible (what Windows 10 and 11 ship with). */
-function script(token: string, url: string): string {
+function script(token: string, urls: string[]): string {
   return String.raw`$ErrorActionPreference = 'SilentlyContinue'
 $token = '__TOKEN__'
-$url = '__URL__/api/devices/inventory'
+$urls = @(__URLS__)
 Write-Host ''
 Write-Host '  Fortress IT - hardware report' -ForegroundColor Green
 Write-Host '  Reading the details of this computer...'
@@ -158,19 +166,29 @@ $hw = @{
   battery = [bool](Get-CimInstance Win32_Battery)
 }
 $json = @{ token = $token; hw = $hw } | ConvertTo-Json -Depth 6 -Compress
-try {
-  Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($json)) | Out-Null
-  $fgOk = $true
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch { }
+$bytes = [Text.Encoding]::UTF8.GetBytes($json)
+$why = @()
+foreach ($u in $urls) {
+  try {
+    Invoke-RestMethod -Uri ($u + '/api/devices/inventory') -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes -TimeoutSec 20 | Out-Null
+    $fgOk = $true
+    break
+  } catch {
+    $why += ($u + ' : ' + $_.Exception.Message)
+  }
+}
+if ($fgOk) {
   Write-Host ''
   Write-Host '  Done. IT can now see the details of this computer.' -ForegroundColor Green
   Write-Host ('  ' + $hw.manufacturer + ' ' + $hw.model + ', ' + $hw.ramGb + ' GB RAM, ' + $hw.cpu.name)
-} catch {
+} else {
   Write-Host ''
-  Write-Host '  Could not send the report:' -ForegroundColor Red
-  Write-Host ('  ' + $_.Exception.Message)
-  Write-Host '  Check you are on the office network, then run it again.'
+  Write-Host '  Could not send the report. Tried:' -ForegroundColor Red
+  foreach ($w in $why) { Write-Host ('  ' + $w) }
+  Write-Host '  Check you are on the office network. If the helpdesk has a new address, open it in the browser and get a fresh link.'
 }
-`.replace("__TOKEN__", token).replace("__URL__", url);
+`.replace("__TOKEN__", token).replace("__URLS__", urls.map((u) => `'${u}'`).join(", "));
 }
 
 devices.get("/script.ps1", (c) => {
@@ -179,7 +197,7 @@ devices.get("/script.ps1", (c) => {
   if (!valid(t)) return c.text("This link has expired. Open Your account in the helpdesk and get a new one.", 410);
   c.header("Content-Type", "text/plain; charset=utf-8");
   c.header("Cache-Control", "no-store");
-  return c.body(script(t, baseUrl(c)));
+  return c.body(script(t, candidateUrls(c)));
 });
 
 // A double-clickable version: a .cmd file whose first lines start PowerShell on the rest of the same file.
@@ -206,7 +224,7 @@ devices.get("/script.cmd", (c) => {
   c.header("Content-Type", "application/octet-stream");
   c.header("Content-Disposition", 'attachment; filename="fortress-hardware-report.cmd"');
   c.header("Cache-Control", "no-store");
-  return c.body(head.join("\r\n") + "\r\n" + script(t, baseUrl(c)).replace(/\r?\n/g, "\r\n"));
+  return c.body(head.join("\r\n") + "\r\n" + script(t, candidateUrls(c)).replace(/\r?\n/g, "\r\n"));
 });
 
 // The script posts here. No session cookie: the signed token says which computer record it belongs to.

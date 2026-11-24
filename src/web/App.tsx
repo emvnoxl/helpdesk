@@ -2,6 +2,7 @@ import { AdminPortal } from "./AdminPortal";
 import { AgentPortal } from "./AgentPortal";
 import { NotifyProvider } from "./notify";
 import { ThemeProvider } from "./theme";
+import { UpdateNotice } from "./UpdateNotice";
 import { UserApp } from "./UserApp";
 
 /* Three separate places, each with its own sign-in:
@@ -14,6 +15,7 @@ export function App() {
   const screen = path === "/admin" ? <AdminPortal /> : path === "/agent" ? <AgentPortal /> : <UserApp />;
   return (
     <ThemeProvider>
+      <UpdateNotice />
       <NotifyProvider>{screen}</NotifyProvider>
     </ThemeProvider>
   );

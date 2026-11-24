@@ -6,6 +6,7 @@ import { Reports } from "./Reports";
 import { ActivityLog } from "./ActivityLog";
 import { PeoplePanel } from "./PeoplePanel";
 import { Assets } from "./Assets";
+import { SystemPanel } from "./SystemPanel";
 import { UsersPanel } from "./UsersPanel";
 import { CountUp } from "./motion";
 import { useNotify } from "./notify";
@@ -20,7 +21,7 @@ import { PriorityChip, STATUS, ago } from "./viz";
 /* The work area shared by both portals. Agents get: my queue, needs triage, all tickets.
    Admins also get the analytics dashboard and staff accounts. */
 
-type Tab = "dashboard" | "mine" | "triage" | "resolved" | "tickets" | "library" | "reports" | "activity" | "people" | "assets" | "users";
+type Tab = "dashboard" | "mine" | "triage" | "resolved" | "tickets" | "library" | "reports" | "activity" | "people" | "assets" | "users" | "system";
 
 function Tile({ label, value, accent, sub, i = 0 }: { label: string; value: ReactNode; accent: string; sub?: string; i?: number }) {
   const text = typeof value === "string";
@@ -96,7 +97,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
     { id: "resolved", label: <>Resolved <span className={`ml-1.5 rounded-full px-2 py-0.5 text-xs ${d.resolved.length ? "bg-brand-green text-ink" : "bg-fg/10"}`}>{d.resolved.length}</span></> },
     { id: "tickets", label: "All tickets" },
     { id: "library", label: "Library" },
-    ...(admin ? [{ id: "reports" as Tab, label: "Reports" }, { id: "activity" as Tab, label: "Activity" }, { id: "people" as Tab, label: "People" }, { id: "assets" as Tab, label: "Computers" }, { id: "users" as Tab, label: "Staff" }] : []),
+    ...(admin ? [{ id: "reports" as Tab, label: "Reports" }, { id: "activity" as Tab, label: "Activity" }, { id: "people" as Tab, label: "People" }, { id: "assets" as Tab, label: "Computers" }, { id: "users" as Tab, label: "Staff" }, { id: "system" as Tab, label: "System" }] : []),
   ];
 
   return (
@@ -190,6 +191,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
         {tab === "people" && admin && <PeoplePanel onExpired={onExpired} />}
         {tab === "assets" && admin && <Assets onExpired={onExpired} />}
         {tab === "users" && admin && <UsersPanel meId={meId} onExpired={onExpired} />}
+        {tab === "system" && admin && <SystemPanel onExpired={onExpired} />}
       </div>
     </div>
   );

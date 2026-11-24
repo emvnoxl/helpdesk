@@ -11,6 +11,8 @@ import { MIN_PASSWORD } from "./staff";
 import { saveCalendar, saveSlaHours, slaHours, workCalendar } from "./sla";
 import { recurring } from "./recurring";
 import { dashboard } from "./dashboard";
+import { system } from "./system";
+import { backups } from "./backup";
 import { hashPassword, randomPassword } from "./security";
 
 /* Admin-only API (/api/admin). A signed-in agent gets a plain 404, exactly as if none of this existed. */
@@ -28,6 +30,8 @@ admin.route("/board", dashboard);
 admin.route("/activity", activity);
 admin.route("/reports", reports);
 admin.route("/recurring", recurring);
+admin.route("/system", system);
+admin.route("/backups", backups);
 
 /* ---------- response targets (hours per priority) ---------- */
 admin.get("/sla", async (c) => c.json({ hours: await slaHours(), calendar: workCalendar() }));

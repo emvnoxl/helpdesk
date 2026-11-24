@@ -38,7 +38,7 @@ function tone(c: AudioContext, freq: number, at: number, dur: number, vol: numbe
   o.stop(t0 + dur + 0.05);
 }
 
-export type Chime = "message" | "new_ticket" | "assigned" | "status" | "note" | "sla_warn" | "sla_breach" | "call_request" | "call";
+export type Chime = "message" | "new_ticket" | "assigned" | "status" | "note" | "sla_warn" | "sla_breach" | "call_request" | "call" | "update" | "alert";
 
 /** Short, soft and distinct per kind: a two-note ping for messages, a rising three-note for a new ticket, and so on. */
 export function chime(kind: Chime = "message", force = false) {
@@ -52,6 +52,8 @@ export function chime(kind: Chime = "message", force = false) {
     case "call_request": [0, 0.26, 0.52].forEach((at) => { tone(c, 880, at, 0.18, 0.12, "triangle"); tone(c, 1108.73, at, 0.18, 0.08, "triangle"); }); break; // three quick double-tones, like a phone
     case "call": tone(c, 392, 0, 0.4, 0.09, "triangle"); break; // a missed call: one low note
     case "note": tone(c, 440, 0, 0.3, 0.08); break;
+    case "update": tone(c, 587.33, 0, 0.32, 0.09); break;
+    case "alert": [587.33, 493.88].forEach((f, i) => tone(c, f, i * 0.14, 0.34, 0.1, "triangle")); break;
     case "sla_warn": [587.33, 493.88].forEach((f, i) => tone(c, f, i * 0.14, 0.34, 0.1, "triangle")); break; // two falling notes: heads up
     case "sla_breach": [392, 329.63, 261.63].forEach((f, i) => tone(c, f, i * 0.15, 0.42, 0.12, "triangle")); break; // three falling notes: late
     default: [659.25, 880].forEach((f, i) => tone(c, f, i * 0.1, 0.34, 0.11)); // message

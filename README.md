@@ -4,8 +4,8 @@ An internal ticketing system for Fortress Ghana. One small Docker container, one
 
 | Who | Where | Signs in with | Sees |
 |---|---|---|---|
-| Normal users | `/` | name + company email + a personal 6-digit PIN | Home, submit a ticket, **My queue**, a simple **Live board** showing what IT is working on and where *they* sit, Help articles |
-| Agents | `/agent` | email + password (made by an admin) | their queue, tickets needing triage, every ticket |
+| Normal users | `/` | Microsoft 365 account (or name + email + 6-digit PIN until that is switched on) | Home, submit a ticket, **My queue**, a simple **Live board** showing what IT is working on and where *they* sit, Help articles |
+| Agents | `/agent` | Microsoft 365 account (or email + password until that is switched on); an admin adds them under Staff | their queue, tickets needing triage, every ticket |
 | Admins | `/admin` | email + password | all of the above plus the analytics dashboard, the full **Live board** (Fullscreen / office display), and staff accounts |
 
 Nothing in the normal app links to `/agent` or `/admin`.
@@ -31,12 +31,41 @@ temporary password to hand over, and must choose their own at first sign-in.
 Sign in at **`/admin#tv`** on the monitor. It opens straight onto the Live board; leave "keep this screen signed in for
 12 hours" ticked. Use the Fullscreen button (or F11).
 
-### Email notifications
-Requesters are emailed when their ticket's status changes or it gets assigned. Set **one** of these in `.env`:
-SMTP (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, ...) or Microsoft Graph (`GRAPH_*`). With neither set, notifications are off.
-`MAIL_LOG_ONLY=1` prints them to the log instead, which is handy for a trial.
+### Signing in with Microsoft 365
+**Admin > System > Sign in with Microsoft 365** walks through it. In short: in Microsoft Entra create an app registration (this organisation only), add the **Web redirect
+address** the page shows (it is `<your address>/api/auth/microsoft/callback`, so set the Address first), copy the tenant ID and client ID, create a client secret, and paste
+the three into the page. Press **Test sign-in** and sign in with your own account. Only then does **Make Microsoft 365 the only way to sign in** unlock.
 
-Replies that IT writes on a ticket are emailed to the requester as well.
+- **Normal users** click "Sign in with Microsoft". The account is created from their Microsoft profile (name, job title, department); if they already had one (a PIN, or from an email), it is linked to it by email, so their tickets stay. No PIN, no typing.
+- **Agents and admins** sign in the same way at `/agent` and `/admin`, but must already exist under **Staff** (an admin adds them by email). Anyone else is told to ask an admin.
+- When it is "the only way": names and PINs stop working, agents can't use passwords, and **admins keep a local password** at `/admin` ("Use a local admin password instead") as the way back in if Microsoft or the tenant is unavailable. `docker compose exec helpdesk node dist-server/index.js reset-admin you@yourcompany.com` still works too.
+- Multi-factor sign-in, password policy and lock-outs are Microsoft's, so they apply here automatically (conditional access too).
+- If someone's email changes in Microsoft 365 their account follows (it is matched by Microsoft's stable ID). A Microsoft account whose email belongs to a different helpdesk account is refused.
+- It only needs the delegated **User.Read** permission. If email is already sent through Microsoft 365 you can tick "use the same app registration" and just add the redirect address to that app.
+- The sign-in uses the standard authorization-code flow with PKCE from the server. The ID token comes straight from Microsoft's token endpoint over TLS (authenticated with your client secret), so its claims (issuer, audience, tenant, nonce, expiry) are checked rather than its signature, as the OpenID Connect specification allows.
+- Not yet tried against a real tenant: please test with your own account first (that is what the Test button is for).
+
+### Setting up the address and email (no file editing)
+**Admin > System** has the **Address** and **Email settings** forms: the helpdesk's web address, other addresses it answers on, whether a reverse proxy provides the
+https, and how email is sent (SMTP with a server, port and login, or Microsoft 365 with a tenant ID, client ID and secret; there is a one-click
+Microsoft 365 SMTP preset). What you save there **overrides the same lines in `.env`** immediately, with no restart, and is kept in the database (so it is in your backups).
+The SMTP password and the Graph secret are stored encrypted and are never shown again; leave the box empty to keep the saved one.
+An https address is only accepted when you are already using the helpdesk over https (otherwise you would be signed out and locked out).
+The `.env` lines still work as the starting point, and are used until you save something on that page.
+
+### Email notifications
+Set up in **Admin > System** (above), or put **one** of these in `.env`: SMTP (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, ...) or Microsoft Graph (`GRAPH_*`). With neither set, no emails are sent.
+`MAIL_LOG_ONLY=1` prints them to the log instead, which is handy for a trial. **Admin > System > Email** shows whether it is working, how many are
+waiting, the last error if a send failed (it is retried automatically), and has a **Send a test email** button: use it first.
+
+- **Requesters** are emailed when their ticket is received (raised on the web or by email), when IT replies (with the reply text), when it is assigned
+  and when its status changes ("resolved" tells them to say so if it is not fixed).
+- **IT staff** are emailed when something needs them: a new ticket, one assigned to them, a requester writing on their ticket (or any unassigned one),
+  an internal note, a late ticket or a call request. They get an email only if they have **not already seen it in the helpdesk** after
+  `STAFF_EMAIL_DELAY_SECONDS` (default 120), and several things at once arrive as one email.
+- Every email has the ticket and an **Open** button that goes straight to it (needs `APP_URL`; requesters land in the normal app, staff in their portal; if they are
+  not signed in, they sign in first).
+- Anyone can switch their emails off: **Your account** for requesters, **Account** in the agent and admin portals.
 
 ### Tickets by email
 Optional. An email to the helpdesk mailbox raises a ticket in the sender's name; a reply to one of the helpdesk's emails
@@ -78,14 +107,22 @@ Put nginx, Caddy or Traefik in front for HTTPS. Then in `.env` set `APP_URL=http
 `TRUST_PROXY=1`. (Staff sessions use `Secure` cookies once `APP_URL` is https.)
 
 ### Backups
-Everything lives in the `helpdesk-data` volume (`/data`): `helpdesk.db` (tickets, users), `uploads/` (attached files) and `session.secret`. Copy `uploads/` too when you back up the database.
+Everything lives in the `helpdesk-data` volume (`/data`): `helpdesk.db` (tickets, users), `uploads/` (attached files) and `session.secret`.
 
-```bash
-# a consistent copy of the database, while the app is running (SQLite will not overwrite an existing file, so clear the old copy first)
-docker compose exec helpdesk rm -f /data/backup.db
-docker compose exec helpdesk node -e "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/data/helpdesk.db');d.exec(\"VACUUM INTO '/data/backup.db'\")"
-docker compose cp helpdesk:/data/backup.db ./helpdesk-backup.db
-```
+**Automatic.** Every day after `BACKUP_HOUR` (default 02:00 UTC, which is Ghana time) the helpdesk copies its database while it runs, compresses it
+(`helpdesk-20261124-0200.db.gz`) and keeps the newest `BACKUP_KEEP` (default 14). It also keeps a copy of the uploaded files next to them. **Admin > System**
+shows when the last good backup was, lets you press **Back up now** and **download** any of them, and the admins get a bell alert if backups stop working for
+a day and a half.
+
+By default the copies go to a folder inside the data volume. That protects you from a bad update or a deleted ticket, but **not from losing the disk**.
+For real safety send them elsewhere: mount another disk or a NAS share into the container (the commented `volumes` line in `docker-compose.yml`) and set
+`BACKUP_DIR=/backups` in `.env`. Download a copy now and then too.
+
+**Restoring** is manual on purpose:
+1. `docker compose stop helpdesk`
+2. Unzip the backup (`gunzip`, or 7-Zip on Windows) and replace `helpdesk.db` in the data volume with it. Delete `helpdesk.db-wal` and `helpdesk.db-shm` if they exist.
+3. Copy the backup's `uploads` folder over the data volume's `uploads` folder.
+4. `docker compose start helpdesk`
 
 ### Upgrading
 ```bash
@@ -93,6 +130,13 @@ git pull   # or copy the new files
 docker compose up -d --build
 ```
 Data is in the volume, so it's kept. Database changes are applied automatically at start-up (see `migrations/`).
+
+**People are told.** Each build has a version (the git commit; Admin > System shows it). When you stop the container, every open screen switches to
+"The helpdesk is being updated" and reloads itself as soon as the new version answers, so nobody sits in front of a broken page. For a polite warning
+beforehand, open **Admin > System > Announce an update**, choose "in 10 minutes" and every open screen shows a countdown banner. A tab that stays open
+across an update shows "A new version is ready, Reload". When the helpdesk starts on a new version, every admin gets a bell notification and the
+activity log gets a line. (The office display at `/admin#tv` reloads itself.)
+Optional: `BUILD_ID=$(git rev-parse --short HEAD) docker compose up -d --build` puts the commit in the version; without it the version is the build time.
 
 ### Locked out?
 If no admin can sign in:
@@ -144,5 +188,5 @@ working-hours code; nothing outside the repository is touched).
 - **Computers** (admin tab): every computer that has reported in, grouped by serial number, with plain-language health flags (disk nearly full, Windows 10, not restarted for weeks...) and a CSV export.
 - **Live board in its own tab.** The admin panel's Live board button opens the board in a separate browser tab, so the panel stays as it was.
 - **Normal-user sign-in** uses a name, company email and a personal **6-digit PIN**. The first person to use an email creates its PIN; any other computer, browser or incognito window must enter it, so typing a colleague's address no longer opens their tickets. A computer that is already signed in stays signed in; untick "Remember me" on shared PCs. Forgotten PINs are reset by an admin under Admin > People. People who had accounts before PINs existed are asked to create one at their next sign-in. Five wrong PINs lock the account for 15 minutes. Passkeys / Windows Hello can be added later once the helpdesk is served over HTTPS on a proper hostname.
-- **Computer details.** When someone raises a ticket, IT sees which computer it came from, in the ticket and under Admin > People: system, processor, memory, screen and graphics, drawn as a small picture. A browser can't see the make, model, serial number or disks, so each person can also run a one-off hardware report from **Your account > This computer > Send hardware details to IT** (Windows only: a double-click file, or a PowerShell command). The report reads specifications only (no files, passwords or browsing) and the link works for 24 hours. Serial numbers and network addresses are visible to IT staff only.
+- **Computer details.** When someone raises a ticket, IT sees which computer it came from, in the ticket and under Admin > People: system, processor, memory, screen and graphics, drawn as a small picture. A browser can't see the make, model, serial number or disks, so each person can also run a one-off hardware report from **Your account > This computer > Send hardware details to IT** (Windows only: a double-click file, or a PowerShell command). The report reads specifications only (no files, passwords or browsing) and the link works for 24 hours. The file knows the address the person had open in their browser, so it keeps working when the helpdesk's IP or name changes; `ALT_URLS` in `.env` lists more addresses for it to try (for example both the name and the NAS's IP) and, if none answers, it shows every address it tried. Serial numbers and network addresses are visible to IT staff only.
 

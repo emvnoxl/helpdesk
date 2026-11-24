@@ -2,22 +2,32 @@ import nodemailer from "nodemailer";
 import { config } from "./config";
 import { db } from "./db";
 
-/* Sends "your ticket changed" emails. It runs inside the server on a timer: no cron service needed.
-   Transport, in order of preference: Microsoft Graph (if configured), SMTP (if configured), or just the log (MAIL_LOG_ONLY=1).
-   Events are marked sent only after a successful send; anything older than a day is dropped rather than sent late. */
+/* Sends the helpdesk's emails. It runs inside the server on a timer: no cron service needed.
+   Transport, in order of preference: MAIL_LOG_ONLY=1 (print to the log), Microsoft Graph (if configured), SMTP (if configured).
+
+   Two streams:
+   - REQUESTERS are emailed from ticket_events (status, assignee, a staff reply, "we have your ticket"), straight away.
+   - IT STAFF are emailed from their bell notifications (new ticket, assigned to you, a requester wrote, a late ticket, a call request,
+     an internal note) but only if they are still unread after STAFF_EMAIL_DELAY_SECONDS (so nothing is emailed while they are at the
+     helpdesk), and several arriving together become ONE email.
+   Anyone can switch their emails off (users.email_notify). Rows are marked sent only after a successful send; anything older than a day
+   is dropped rather than sent late. */
 
 interface Pending {
   id: number;
+  ticket_id: number;
   field: string;
   new_value: string | null;
   ref: string;
   title: string;
+  source: string;
   to_email: string;
   to_name: string;
   new_assignee: string | null;
   actor: string | null;
   reply: string | null;
 }
+interface StaffRow { id: number; user_id: number; kind: string; title: string; body: string; ticket_id: number | null; ref: string | null; email: string; name: string; role: string }
 
 interface Mail {
   to: string;
@@ -32,24 +42,95 @@ const LABEL: Record<string, string> = { open: "Open", in_progress: "In progress"
 /** True when replies to our emails come back into the helpdesk, so the email may say "just reply". */
 const repliesComeBack = () => !!(config.inbound.secret || (config.inbound.mailbox && config.mail.graph.tenantId));
 
-function compose(e: Pending): Mail {
+/* ---------- the look of an email ---------- */
+type Part = string | { b: string };
+interface Block { html: string; text: string }
+const para = (...parts: Part[]): Block => ({
+  html: `<p style="margin:0 0 14px;line-height:1.55;font-size:15px">${parts.map((x) => (typeof x === "string" ? esc(x) : `<b>${esc(x.b)}</b>`)).join("")}</p>`,
+  text: parts.map((x) => (typeof x === "string" ? x : x.b)).join(""),
+});
+const quote = (t: string): Block => ({
+  html: `<blockquote style="margin:0 0 14px;padding:4px 14px;border-left:3px solid #00a859;color:#2b2b2b;font-size:15px;line-height:1.55">${esc(t).replace(/\n/g, "<br>")}</blockquote>`,
+  text: t.split("\n").map((l) => "> " + l).join("\n"),
+});
+const ticketLine = (ref: string, title: string): Block => ({
+  html: `<p style="margin:0 0 18px;padding:10px 14px;background:#f4f4f1;border-radius:8px;font-size:14px"><b>${esc(ref)}</b> &nbsp;${esc(title)}</p>`,
+  text: `${ref}: ${title}`,
+});
+const button = (label: string, href: string): Block => ({
+  html: `<p style="margin:6px 0 4px"><a href="${esc(href)}" style="display:inline-block;background:#00a859;color:#0b0b0b;font-weight:700;font-size:15px;text-decoration:none;padding:11px 20px;border-radius:8px">${esc(label)}</a></p>`,
+  text: `${label}: ${href}`,
+});
+
+/** One branded wrapper for every email: the three brand colours as a stripe, the name, the content, and how to switch them off. */
+function shell(blocks: Block[], foot: string): { html: string; text: string } {
+  const html =
+    `<!doctype html><html><body style="margin:0;padding:0;background:#efefea">` +
+    `<div style="padding:24px 12px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#0b0b0b">` +
+    `<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e3e3dc;border-radius:12px;overflow:hidden">` +
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr>` +
+    `<td height="5" width="34%" bgcolor="#00a859" style="font-size:0;line-height:0">&nbsp;</td><td height="5" width="33%" bgcolor="#ffb400" style="font-size:0;line-height:0">&nbsp;</td><td height="5" width="33%" bgcolor="#ee3239" style="font-size:0;line-height:0">&nbsp;</td></tr></table>` +
+    `<div style="padding:24px 28px 8px">` +
+    `<p style="margin:0 0 18px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#007a3d">Fortress Oil &amp; Gas Helpdesk</p>` +
+    blocks.map((b) => b.html).join("") +
+    `</div><div style="padding:14px 28px 22px;border-top:1px solid #eeeee8;font-size:12px;line-height:1.5;color:#6b6b66">${esc(foot)}</div>` +
+    `</div></div></body></html>`;
+  const text = blocks.map((b) => b.text).join("\n\n") + "\n\n--\nFortress Oil & Gas Helpdesk\n" + foot;
+  return { html, text };
+}
+
+/** A link straight to a ticket (needs APP_URL). Requesters land in the normal app, staff in their own portal. */
+const ticketUrl = (role: string, id: number) => (config.appUrl ? `${config.appUrl}${role === "admin" ? "/admin" : role === "agent" ? "/agent" : "/"}?t=${id}` : "");
+
+export function composeRequester(e: Pending): Mail {
   const first = e.to_name.split(" ")[0] || "there";
-  let what: string;
-  if (e.field === "reply") what = `<b>${esc(e.actor ?? "IT")}</b> from IT replied:</p><blockquote style="margin:0 0 0 4px;padding:2px 12px;border-left:3px solid #00a859">${esc(e.reply ?? "").replace(/\n/g, "<br>")}</blockquote><p>${repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."}`;
-  else if (e.field === "created") what = `We have your email and raised a ticket for it.${repliesComeBack() ? " Reply to this email to add anything." : ""}`;
-  else if (e.field === "status") what = `The status of your ticket is now <b>${esc(LABEL[e.new_value ?? ""] ?? e.new_value ?? "updated")}</b>.`;
-  else if (e.new_assignee) what = `<b>${esc(e.new_assignee)}</b> is now working on your ticket.`;
-  else what = "Your ticket is waiting to be assigned.";
-  const link = config.appUrl ? `<p><a href="${esc(config.appUrl)}">Open the helpdesk</a></p>` : "";
-  const html = `<p>Hi ${esc(first)},</p><p>${what}</p><p><b>${esc(e.ref)}</b>: ${esc(e.title)}</p>${link}`;
-  const text = html.replace(/<br>/g, "\n").replace(/<\/(p|blockquote)>/g, "\n\n").replace(/<[^>]+>/g, "").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))).replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  const blocks: Block[] = [para(`Hi ${first},`)];
+  let button_label = "Open my ticket";
+  if (e.field === "reply") {
+    blocks.push(para({ b: e.actor ?? "IT" }, " from IT replied:"), quote(e.reply ?? ""), para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
+    button_label = "Open the conversation";
+  } else if (e.field === "created") {
+    blocks.push(e.source === "email"
+      ? para("We have your email and raised a ticket for it.", repliesComeBack() ? " Reply to this email to add anything." : "")
+      : para("We have your ticket. IT will pick it up, and you will get an email when something changes."));
+  } else if (e.field === "status") {
+    blocks.push(para("The status of your ticket is now ", { b: LABEL[e.new_value ?? ""] ?? e.new_value ?? "updated" }, "."));
+    if (e.new_value === "resolved") blocks.push(para("If it is not fixed, open the ticket and say so: it goes straight back to IT."));
+  } else if (e.new_assignee) blocks.push(para({ b: e.new_assignee }, " is now working on your ticket."));
+  else blocks.push(para("Your ticket is waiting to be assigned."));
+  blocks.push(ticketLine(e.ref, e.title));
+  const url = ticketUrl("requester", e.ticket_id);
+  if (url) blocks.push(button(button_label, url));
+  const { html, text } = shell(blocks, "You get these emails because of a ticket you raised. You can switch them off under Your account in the helpdesk.");
   return { to: e.to_email, subject: `[${e.ref}] ${e.title}`, html, text };
+}
+
+/** One email per person per round: a single update reads like the bell, several become a short list. */
+export function composeStaff(rows: StaffRow[]): Mail {
+  const r0 = rows[0]!;
+  const first = r0.name.split(" ")[0] || "there";
+  const blocks: Block[] = [para(`Hi ${first},`)];
+  if (rows.length === 1) {
+    blocks.push(para({ b: r0.title }), para(r0.body));
+  } else {
+    blocks.push(para(`${rows.length} things are waiting for you on the helpdesk:`));
+    for (const r of rows.slice(0, 12)) blocks.push({ html: `<p style="margin:0 0 10px;font-size:14px;line-height:1.5"><b>${esc(r.title)}</b><br><span style="color:#4a4a45">${esc(r.body)}</span></p>`, text: `- ${r.title}${r.body ? ": " + r.body : ""}` });
+    if (rows.length > 12) blocks.push(para(`…and ${rows.length - 12} more.`));
+  }
+  const only = rows.length === 1 && r0.ticket_id ? ticketUrl(r0.role, r0.ticket_id) : "";
+  const home = config.appUrl ? `${config.appUrl}${r0.role === "admin" ? "/admin" : "/agent"}` : "";
+  if (only) blocks.push(button("Open the ticket", only));
+  else if (home) blocks.push(button("Open the helpdesk", home));
+  const { html, text } = shell(blocks, "You are emailed only about things you have not already seen in the helpdesk. You can switch these emails off under Account.");
+  return { to: r0.email, subject: rows.length === 1 ? r0.title : `${rows.length} updates waiting on the helpdesk`, html, text };
 }
 
 /* ---------- transports ---------- */
 type Sender = (m: Mail) => Promise<void>;
 
 let cachedToken: { value: string; exp: number } | undefined;
+/** The Graph credentials were changed: don't keep using a token issued for the old ones. */
+export const forgetGraphToken = () => { cachedToken = undefined; };
 /** An app-only Microsoft Graph token (cached until a minute before it expires). Also used to read the helpdesk mailbox (inbound.ts). */
 export async function graphToken(): Promise<string> {
   const g = config.mail.graph;
@@ -96,9 +177,98 @@ function pickSender(): { name: string; send: Sender } | null {
   return null;
 }
 
+/* ---------- what the System page shows ---------- */
+const state = { okAt: 0, error: "", errorAt: 0 };
+async function deliver(sender: { name: string; send: Sender }, m: Mail) {
+  try {
+    await sender.send(m);
+    state.okAt = Math.floor(Date.now() / 1000);
+    state.error = "";
+  } catch (e) {
+    state.error = `${sender.name}: ${(e as Error).message}`.slice(0, 200);
+    state.errorAt = Math.floor(Date.now() / 1000);
+    throw e;
+  }
+}
+
+export async function mailInfo() {
+  const [a, b] = await db.batch([
+    db.prepare("SELECT COUNT(*) AS n FROM ticket_events WHERE notified = 0 AND field IN ('status','assignee','reply','created') AND created_at > unixepoch() - 86400"),
+    db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE emailed = 0 AND read_at IS NULL AND created_at > unixepoch() - 86400"),
+  ]);
+  return { transport: pickSender()?.name ?? "off", last_ok_at: state.okAt || null, last_error: state.error || null, last_error_at: state.errorAt || null, waiting: (a.results[0]?.n ?? 0) + (b.results[0]?.n ?? 0) };
+}
+
+/** An admin's "send me a test": the same path as the real emails, and the error (if any) comes straight back. */
+export async function sendTest(to: string): Promise<string> {
+  const sender = pickSender();
+  if (!sender) throw new Error("Email is not set up. Set SMTP_* or GRAPH_* in .env (or MAIL_LOG_ONLY=1 to print emails to the log).");
+  const { html, text } = shell(
+    [para("This is a test email from your helpdesk."), para("If you can read this, ticket emails will reach people. The real ones look like this, with the ticket and a button to open it."), ticketLine("FG-0000", "A sample ticket"), ...(config.appUrl ? [button("Open the helpdesk", config.appUrl)] : [])],
+    "Sent from Admin > System.",
+  );
+  await deliver(sender, { to, subject: "Test email from the Fortress Oil & Gas Helpdesk", html, text });
+  return sender.name;
+}
+
 /* ---------- the loop ---------- */
 let warned = false;
 let busy = false;
+
+async function sendRequesterEvents(sender: { name: string; send: Sender }): Promise<number> {
+  // People who switched emails off: mark their events done without sending.
+  await db.prepare("UPDATE ticket_events SET notified = 1 WHERE notified = 0 AND ticket_id IN (SELECT t.id FROM tickets t JOIN users u ON u.id = t.requester_id WHERE u.email_notify = 0 OR u.active = 0)").run();
+  const { results } = await db
+    .prepare(
+      `SELECT e.id, t.id AS ticket_id, e.field, e.new_value, t.ref, t.title, t.source, u.email AS to_email, u.name AS to_name,
+              CASE WHEN e.field = 'assignee' THEN (SELECT name FROM users WHERE id = CAST(e.new_value AS INTEGER)) END AS new_assignee,
+              (SELECT name FROM users WHERE id = e.actor_id) AS actor,
+              CASE WHEN e.field = 'reply' THEN (SELECT body FROM comments WHERE id = CAST(e.new_value AS INTEGER) AND internal = 0) END AS reply
+       FROM ticket_events e JOIN tickets t ON t.id = e.ticket_id JOIN users u ON u.id = t.requester_id
+       WHERE e.notified = 0 AND (e.field IN ('status','assignee','reply') OR (e.field = 'created' AND t.source IN ('email','web')))
+       ORDER BY e.created_at ASC LIMIT 25`,
+    )
+    .all<Pending>();
+  let sent = 0;
+  for (const e of results) {
+    await deliver(sender, composeRequester(e));
+    await db.prepare("UPDATE ticket_events SET notified = 1 WHERE id = ?").bind(e.id).run();
+    sent++;
+  }
+  return sent;
+}
+
+const STAFF_KINDS = ["new_ticket", "assigned", "message", "note", "sla_breach", "call_request"];
+
+async function sendStaffDigests(sender: { name: string; send: Sender }): Promise<number> {
+  // Nothing to email: read already, too old, not staff, switched off, or not a kind worth an email.
+  await db
+    .prepare(
+      `UPDATE notifications SET emailed = 1 WHERE emailed = 0 AND (
+         read_at IS NOT NULL OR created_at < unixepoch() - 86400 OR kind NOT IN (${STAFF_KINDS.map(() => "?").join(",")})
+         OR user_id IN (SELECT id FROM users WHERE role = 'requester' OR email_notify = 0 OR active = 0))`,
+    )
+    .bind(...STAFF_KINDS)
+    .run();
+  const { results } = await db
+    .prepare(
+      `SELECT n.id, n.user_id, n.kind, n.title, n.body, n.ticket_id, t.ref, u.email, u.name, u.role
+       FROM notifications n JOIN users u ON u.id = n.user_id LEFT JOIN tickets t ON t.id = n.ticket_id
+       WHERE n.emailed = 0 AND n.read_at IS NULL AND n.created_at <= unixepoch() - ?
+       ORDER BY n.id ASC LIMIT 200`,
+    )
+    .bind(config.mail.staffDelaySeconds)
+    .all<StaffRow>();
+  const byPerson = new Map<number, StaffRow[]>();
+  for (const r of results) byPerson.set(r.user_id, [...(byPerson.get(r.user_id) ?? []), r]);
+  let sent = 0;
+  for (const rows of byPerson.values()) {
+    await deliver(sender, composeStaff(rows));
+    await db.prepare(`UPDATE notifications SET emailed = 1 WHERE id IN (${rows.map(() => "?").join(",")})`).bind(...rows.map((r) => r.id)).run();
+    sent++;
+  }
+  return sent;
+}
 
 export async function sendPending(): Promise<number> {
   const sender = pickSender();
@@ -109,30 +279,12 @@ export async function sendPending(): Promise<number> {
   }
   // Don't send stale news: anything over a day old is simply marked done.
   await db.prepare("UPDATE ticket_events SET notified = 1 WHERE notified = 0 AND created_at < unixepoch() - 86400").run();
-  const { results } = await db
-    .prepare(
-      `SELECT e.id, e.field, e.new_value, t.ref, t.title, u.email AS to_email, u.name AS to_name,
-              CASE WHEN e.field = 'assignee' THEN (SELECT name FROM users WHERE id = CAST(e.new_value AS INTEGER)) END AS new_assignee,
-              (SELECT name FROM users WHERE id = e.actor_id) AS actor,
-              CASE WHEN e.field = 'reply' THEN (SELECT body FROM comments WHERE id = CAST(e.new_value AS INTEGER) AND internal = 0) END AS reply
-       FROM ticket_events e JOIN tickets t ON t.id = e.ticket_id JOIN users u ON u.id = t.requester_id
-       WHERE e.notified = 0 AND (e.field IN ('status','assignee','reply') OR (e.field = 'created' AND t.source = 'email'))
-       ORDER BY e.created_at ASC LIMIT 25`,
-    )
-    .all<Pending>();
-
-  let sent = 0;
-  for (const e of results) {
-    try {
-      await sender.send(compose(e));
-      await db.prepare("UPDATE ticket_events SET notified = 1 WHERE id = ?").bind(e.id).run();
-      sent++;
-    } catch (err) {
-      console.error(`[mail] ${sender.name} failed for event ${e.id}: ${(err as Error).message} (will retry)`);
-      break; // the transport is probably down; try again on the next tick
-    }
+  try {
+    return (await sendRequesterEvents(sender)) + (await sendStaffDigests(sender));
+  } catch (err) {
+    console.error(`[mail] ${sender.name} failed: ${(err as Error).message} (will retry)`);
+    return 0; // the transport is probably down; try again on the next tick
   }
-  return sent;
 }
 
 export function startNotifier() {

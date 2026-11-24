@@ -7,6 +7,7 @@ export type StaffUser = {
   email: string;
   role: "agent" | "admin";
   must_change_password: boolean;
+  email_notify: boolean;
   expires_at: number | null;
 };
 

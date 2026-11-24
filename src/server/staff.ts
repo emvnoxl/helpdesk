@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { type AppEnv, clientIp, endStaffSession, staffAuth, staffSessionExpiry, startStaffSession } from "./auth";
 import { db } from "./db";
-import { config } from "./config";
+import { config, ssoEnforced } from "./config";
 import { RateLimiter, hashPassword, verifyPassword } from "./security";
 import { audit } from "./audit";
 
@@ -35,6 +35,8 @@ staff.post("/login", async (c) => {
   const password = typeof body.password === "string" ? body.password : "";
   const portal = body.portal === "admin" ? "admin" : body.portal === "agent" ? "agent" : null;
   if (!portal || !email || !password || password.length > 200) return c.json({ error: "Enter your email and password." }, 400);
+  // With Microsoft 365 sign-in switched on, agents use only that. Admins keep their local password as the way back in if Microsoft or the tenant is unavailable.
+  if (ssoEnforced() && portal !== "admin") return c.json({ error: "incorrect" }, 401);
 
   // Each portal only accepts its own role, so an agent can't sign in at /admin and vice versa.
   const row = await db
@@ -81,9 +83,10 @@ staff.post("/logout", (c) => {
 /* ---------- signed-in staff from here on ---------- */
 staff.use("*", staffAuth());
 
-staff.get("/me", (c) => {
+staff.get("/me", async (c) => {
   const u = c.get("user");
-  return c.json({ id: u.id, name: u.name, email: u.email, role: u.role, must_change_password: !!u.must_change_password, expires_at: staffSessionExpiry(c) });
+  const p = await db.prepare("SELECT email_notify FROM users WHERE id = ?").bind(u.id).first<{ email_notify: number }>();
+  return c.json({ id: u.id, name: u.name, email: u.email, role: u.role, must_change_password: !!u.must_change_password, email_notify: p?.email_notify !== 0, expires_at: staffSessionExpiry(c) });
 });
 
 staff.post("/password", async (c) => {
@@ -125,9 +128,16 @@ staff.post("/password", async (c) => {
 // The name people see as "assigned to".
 staff.patch("/profile", async (c) => {
   const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  const me = c.get("user");
+  // Only the e-mail switch: { email_notify: boolean }
+  if (body.name === undefined && typeof body.email_notify === "boolean") {
+    await db.prepare("UPDATE users SET email_notify = ? WHERE id = ?").bind(body.email_notify ? 1 : 0, me.id).run();
+    await audit(c, "account.email_notify", "account", body.email_notify ? "Switched ticket emails on" : "Switched ticket emails off");
+    return c.json({ ok: true, email_notify: body.email_notify });
+  }
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 100) : "";
   if (name.length < 2) return c.json({ error: "Enter your name." }, 400);
-  await db.prepare("UPDATE users SET name = ? WHERE id = ?").bind(name, c.get("user").id).run();
+  await db.prepare("UPDATE users SET name = ? WHERE id = ?").bind(name, me.id).run();
   return c.json({ ok: true, name });
 });
 

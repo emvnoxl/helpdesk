@@ -72,7 +72,7 @@ backlog age, speed vs target by priority, day-by-hour heatmap, top requesters, r
 ```
 src/server/   index.ts (app + static + start) config.ts db.ts security.ts auth.ts identity.ts board.ts tickets.ts
               staff.ts admin.ts dashboard.ts notifier.ts bootstrap.ts static.ts config-route.ts
-              sla.ts worktime.ts inbound.ts tasks.ts checklists.ts recurring.ts calls.ts (+ kb, replies, devices, attachments, reports...)
+              sla.ts worktime.ts inbound.ts tasks.ts checklists.ts recurring.ts calls.ts version.ts system.ts backup.ts (+ kb, replies, devices, attachments, reports...)
 src/web/      App.tsx (router) UserApp.tsx AgentPortal.tsx AdminPortal.tsx + components
 schema.sql  migrations/  Dockerfile  docker-compose.yml  .env.example  README.md  tests/api.mjs
 ```
@@ -215,6 +215,39 @@ schema.sql  migrations/  Dockerfile  docker-compose.yml  .env.example  README.md
 - **Hardware reminder** (`HardwareNudge.tsx` on Home): for Windows users without a hardware report; same one-click flow as onboarding; "Not now" snoozes 14 days in localStorage.
 - **Feedback** (`Rating.tsx`, `POST /:id/rating`): when a ticket is resolved/closed the requester gets "Was this fixed?" (👍/👎 + optional comment, again after a later re-resolve). 👎 on a resolved ticket reopens it
   (event + comment + notification); on a closed ticket it only records and tells IT. Shown to staff on the ticket, in Insights ("Said it was fixed", list of 👎) and in the monthly report + CSV.
+- **Versions and updates** (`version.ts`, `system.ts`, `scripts/build-server.mjs`, `web/system.ts`, `UpdateNotice.tsx`): `npm run build:server` stamps `__BUILD__ {id, builtAt, note}` into the bundle via esbuild `define`
+  (id = git short sha, "+" if dirty; else `t<yyyymmddhhmm>`; `BUILD_ID`/`BUILD_NOTE` env or Docker build args override; `tsx` dev = "dev"). The version is in `/api/config` (`system`), `/healthz` and the first (`hello`) event of every SSE
+  stream; `bus.broadcast()` sends `system` events. The browser keeps `loaded` (first version it saw) and compares: different = stale tab = green "new version, Reload" bar (the `#tv` display reloads itself after 20 s).
+  An admin can announce an update (`POST /api/admin/system/maintenance {minutes, message}`, `DELETE` cancels; in memory, cleared by the restart): amber countdown banner everywhere. On SIGTERM `announceRestart()` pushes
+  `restarting: true` and waits 500 ms before closing, so open screens show a full-screen "being updated" overlay that polls `/healthz` and reloads itself. At start-up `checkForUpdate()` compares `settings.app_version` with the build:
+  a change writes `settings.last_update`, an activity-log line and a `kind = 'update'` bell notification (ticket_id NULL) for every admin. The banner is in page flow (not fixed) and fires `resize` so `TicketView` re-measures.
+  Windows cannot test the SIGTERM path with `child.kill` (it hard-kills): `tests/api.mjs` skips that one check there; a wrapper that calls `process.emit("SIGTERM")` was used for the browser run.
+- **Backups and System page** (`backup.ts`, `SystemPanel.tsx`, admin tab "System", `/api/admin/system`, `/api/admin/backups`): after `BACKUP_HOUR` (UTC, default 2) a 5-minute timer runs `VACUUM INTO` a temp file, gzips it to
+  `BACKUP_DIR/helpdesk-YYYYMMDD-HHMM.db.gz`, mirrors `uploads/` (copy new, drop removed), keeps `BACKUP_KEEP` (14); a first backup is taken a minute after start-up if none exists. Status in `settings.backup_last` / `backup_last_ok`;
+  if the last good backup is older than 36 h or the last attempt failed, admins get one `kind = 'alert'` notification a day. Admin API: list, `POST /run`, `GET /:name` download (name must match the pattern; audited). The page warns when
+  `BACKUP_DIR` is inside the data folder. Restore is manual (README).
+- **Hardware script addresses** (`devices.ts`): `candidateUrls()` = the address the browser used (Host / `X-Forwarded-*`), then `APP_URL`, then `ALT_URLS`; only `^https?://[A-Za-z0-9.-]+(:port)?$` is allowed because they go into the script.
+  The PowerShell tries each in turn, forces TLS 1.2 and lists every address it tried when all fail. (Before, `APP_URL` always won, so a stale IP in it broke the report.)
+- **Ticket emails** (`notifier.ts`, migration 008 `users.email_notify` + `notifications.emailed`, `EmailSwitch.tsx`, `deeplink.ts`): two streams on one timer. REQUESTERS: `ticket_events` (`status`, `assignee`, `reply`, and `created` for
+  `source` web/email) are mailed at once by `composeRequester`; events of people with `email_notify = 0` are just marked done. STAFF: `notifications` rows of kind new_ticket/assigned/message/note/sla_breach/call_request that are still unread
+  after `STAFF_EMAIL_DELAY_SECONDS` (120) go out as ONE email per person per round (`composeStaff`); read, old, other kinds, requesters, switched-off and inactive rows are marked `emailed = 1` without sending. Every mail is built from
+  `para/quote/ticketLine/button` blocks inside `shell()` (brand stripe, plain-text twin, footer saying how to switch off). Links are `APP_URL/?t=<id>` (requester) and `APP_URL/agent|admin?t=<id>` (staff); `deeplink.ts` reads `?t=` at load
+  and strips it, the three apps start on that ticket (sign-in comes first if needed). Preference API: `PATCH /api/me/preferences` and `PATCH /api/staff/profile {email_notify}` (`/me` and `/staff/me` return it). `mailInfo()` and `sendTest()`
+  feed Admin > System > Email (`POST /api/admin/system/test-email`); `deliver()` records the last success/error. Tests read the `[mail]` lines from the server log (`MAIL_LOG_ONLY`, `STAFF_EMAIL_DELAY_SECONDS=0`).
+- **Setup from the System page** (`settings.ts`, `SystemSetup.tsx`, `GET|PUT /api/admin/system/settings`): the address (`appUrl`, `altUrls`, `trustProxy`) and the mail transport (mode off/log/smtp/graph, from, SMTP host/port/security/user/password,
+  Graph tenant/client/secret/sender) are saved in `settings.app_settings` and **override .env at runtime**: `applyStoredSettings()` (called at start-up after `ensureAdmin`, and after each save) mutates the shared `config` object, which every module
+  reads at call time; `ENV0` keeps what .env said for the "from .env" label. Secrets are sealed with AES-256-GCM (key = sha256 of the session secret) and never returned (`has_pass` / `has_secret` only; an empty field on save keeps the stored one, even
+  one that came from .env). Saving an `https://` address over plain http is refused (it would turn on Secure cookies and lock the admin out); URLs must match `^https?://[A-Za-z0-9.-]+(:port)?$` (they end up inside the hardware script). Saving mail resets the cached Graph token.
+  Audited as `system.settings` (summary only, never a secret). Buttons use the shared `btn` from `ui.ts` (brand green in dark mode); `secondaryBtn` is the outline one.
+- **Microsoft 365 sign-in** (`sso.ts`, migration 009 `users.ms_oid/ms_tid/job_title`, `web/sso.tsx`, `SsoSetup` in `SystemSetup.tsx`, `config.sso`, `ssoReady()`/`ssoEnforced()`): `GET /api/auth/microsoft/start?portal=user|agent|admin[&t=id]` sets a signed
+  `fg_oauth` cookie (state, nonce, PKCE verifier, portal; Lax, 10 min) and redirects to `<authority>/<tenant>/oauth2/v2.0/authorize`; `/callback` checks state, exchanges the code (client secret + verifier), validates the ID token claims (aud, iss, tid,
+  nonce, exp; not the signature: it came straight from the token endpoint), reads Graph `/me` for mail/name/job/department (best effort), then: portal `user` = find by `ms_oid`, else by email (links it), else create a requester; `agent`/`admin` = the
+  account must already exist with that role. A different oid on a linked email, or an oid whose email belongs to another account = refused (`mismatch`); same oid with a new email = the account's email follows. Domain check uses `COMPANY_EMAIL_DOMAIN`.
+  Staff sessions: a pending temporary password is retired. The callback answers with a **meta-refresh page, not a 302**: after a redirect chain that began on Microsoft's site the browser would not send the Strict `fg_staff` cookie.
+  Result goes to the portal with `?t=` (deep link) and `?welcome=1` (new account -> first-time setup) or `?login_error=<code>` (messages in `web/sso.tsx`; `deeplink.ts` takes these params once). A requester session is always role requester.
+  **Enforced** (`config.sso.enforced`, setting saved only after `settings.sso_verified_at`, which an admin Microsoft sign-in sets; changing tenant/client/secret clears it): `/api/identify` = 403 `sso_required`, agents can't use `/api/staff/login`
+  (admins can: break-glass), Welcome shows only the Microsoft button, Account hides the PIN. Credentials come from `SSO_*` env or the System page (secret sealed like the mail ones; "use the same app as email" copies the Graph ones).
+  Redirect URI = `APP_URL` (else the address in use) + `/api/auth/microsoft/callback`. `SSO_AUTHORITY`/`SSO_GRAPH_URL` exist only so tests can point at a pretend Microsoft (`tests/api.mjs` has one; a real-Edge run with one on another host name was done during development).
 
 ## Commands
 `npm run dev:server` (API :3000) + `npm run dev` (web :5173) for development; `npm start` builds and runs on one port; `npm test` runs the

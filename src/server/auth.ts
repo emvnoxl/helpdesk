@@ -33,7 +33,7 @@ const now = () => Math.floor(Date.now() / 1000);
 
 type Ctx = Context<any>;
 
-const isSecure = (c: Ctx) => config.secureCookies || (config.trustProxy && c.req.header("x-forwarded-proto") === "https");
+export const isSecure = (c: Ctx) => config.secureCookies || (config.trustProxy && c.req.header("x-forwarded-proto") === "https");
 
 export function clientIp(c: Ctx): string {
   if (config.trustProxy) {

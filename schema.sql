@@ -22,8 +22,14 @@ CREATE TABLE IF NOT EXISTS users (
   -- Normal users have a personal PIN (hashed like a password); session_version ends all their sessions when bumped.
   pin_hash             TEXT,
   session_version      INTEGER NOT NULL DEFAULT 1,
+  email_notify         INTEGER NOT NULL DEFAULT 1,   -- 0 = this person asked for no ticket emails
+  ms_oid               TEXT,                         -- Microsoft 365 (Entra) object id, linked at the first Microsoft sign-in
+  ms_tid               TEXT,
+  job_title            TEXT,
   created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ms_oid ON users(ms_oid) WHERE ms_oid IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS categories (
   id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +111,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   title      TEXT NOT NULL,
   body       TEXT NOT NULL DEFAULT '',
   read_at    INTEGER,
+  emailed    INTEGER NOT NULL DEFAULT 0,       -- staff: 1 = already emailed (or not to be)
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, id DESC);

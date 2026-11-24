@@ -3,7 +3,7 @@
 // staff-account management, the live board's privacy, notifications, and restart persistence.
 //   npm test        (builds the server first, then runs this)
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import fs, { mkdtempSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -23,7 +23,7 @@ const ok = (name, cond, extra = "") => { cond ? pass++ : fail++; console.log(con
 function start(extraEnv = {}) {
   const child = spawn(process.execPath, ["dist-server/index.js"], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", SSO_AUTHORITY: IDP, SSO_GRAPH_URL: IDP + "/graph", STAFF_EMAIL_DELAY_SECONDS: "0", ALT_URLS: "http://helpdesk.fortress.test/", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (d) => (log += d));
@@ -59,6 +59,46 @@ const maxAge = (r) => Number((r.setCookie[0] ?? "").match(/Max-Age=(\d+)/i)?.[1]
 const dbq = (sql, ...p) => { const d = new DatabaseSync(path.join(DATA, "helpdesk.db")); try { return d.prepare(sql).all(...p); } finally { d.close(); } };
 const dbx = (sql, ...p) => { const d = new DatabaseSync(path.join(DATA, "helpdesk.db")); try { d.prepare(sql).run(...p); } finally { d.close(); } };
 
+import http from "node:http";
+import { createHash as sha256, randomBytes as rnd } from "node:crypto";
+const TENANT = "0a1b2c3d-0000-4000-8000-0000000000aa", CLIENT = "0a1b2c3d-0000-4000-8000-0000000000bb", CSECRET = "pretend~client.secret";
+/* next = who signs in at the pretend Microsoft; flags break one thing at a time. */
+const idp = { next: null, codes: new Map(), exchange: null, graphDown: false, badAud: false, badNonce: false, authorizeSeen: null };
+const idpServer = http.createServer(async (rq, rs) => {
+  const u = new URL(rq.url, "http://idp");
+  const send = (code, obj, headers = {}) => { rs.writeHead(code, { "content-type": "application/json", ...headers }); rs.end(JSON.stringify(obj)); };
+  if (u.pathname.endsWith("/oauth2/v2.0/authorize")) {
+    const p = u.searchParams, redir = p.get("redirect_uri");
+    idp.authorizeSeen = Object.fromEntries(p);
+    if (idp.next?.error) { rs.writeHead(302, { location: redir + "?error=" + idp.next.error + "&state=" + p.get("state") }); return rs.end(); }
+    const code = rnd(12).toString("hex");
+    idp.codes.set(code, { nonce: p.get("nonce"), challenge: p.get("code_challenge"), redir, who: idp.next, clientId: p.get("client_id") });
+    rs.writeHead(302, { location: redir + "?code=" + code + "&state=" + p.get("state") });
+    return rs.end();
+  }
+  if (u.pathname.endsWith("/oauth2/v2.0/token") && rq.method === "POST") {
+    let body = ""; for await (const ch of rq) body += ch;
+    const f = new URLSearchParams(body), c = idp.codes.get(f.get("code") ?? "");
+    idp.codes.delete(f.get("code") ?? ""); // a code works once
+    if (!c) return send(400, { error: "invalid_grant" });
+    const pkceOk = sha256("sha256").update(f.get("code_verifier") ?? "").digest("base64url") === c.challenge;
+    idp.exchange = { secretOk: f.get("client_secret") === CSECRET, pkceOk, redirOk: f.get("redirect_uri") === c.redir, clientOk: f.get("client_id") === c.clientId };
+    if (!idp.exchange.secretOk || !pkceOk || !idp.exchange.redirOk) return send(400, { error: "invalid_grant" });
+    const w = c.who, authority = "http://" + rq.headers.host;
+    const claims = { aud: idp.badAud ? "someone-else" : CLIENT, iss: authority + "/" + TENANT + "/v2.0", tid: TENANT, oid: w.oid, nonce: idp.badNonce ? "nope" : c.nonce, exp: Math.floor(Date.now() / 1000) + 3600, name: w.name, preferred_username: w.email };
+    const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    idp.tokenFor = w;
+    return send(200, { token_type: "Bearer", id_token: b({ alg: "none" }) + "." + b(claims) + ".", access_token: "at-" + w.oid });
+  }
+  if (u.pathname.endsWith("/graph/me")) {
+    if (idp.graphDown) return send(500, { error: "down" });
+    const w = idp.tokenFor;
+    return send(200, { displayName: w.name, mail: w.email, userPrincipalName: w.email, jobTitle: w.job ?? null, department: w.dept ?? null });
+  }
+  send(404, {});
+});
+await new Promise((r) => idpServer.listen(0, "127.0.0.1", r));
+const IDP = "http://127.0.0.1:" + idpServer.address().port;
 let server = start();
 if (!(await waitUp())) { console.log("server did not start:\n" + log); process.exit(1); }
 
@@ -991,7 +1031,7 @@ const ST = "/api/staff/tickets";
   x = await mail({ from: ADMIN, subject: `RE: [${et.ref}] Projector`, text: "Close it", message_id: "<m5@x>" });
   ok("email never acts as IT: a staff address quoting someone's ticket only raises its own", x.json.outcome === "created" && dbq("select status from tickets where id = ?", et.id)[0].status === "in_progress");
   await new Promise((r) => setTimeout(r, 2600));
-  ok("a reply from IT is emailed to the requester", /\[mail\] to=kofi\.mensah@[^\n]*\n?[\s\S]{0,80}from IT replied:\s+Is the power light on at the back\?/.test(log), log.split("\n").filter((l) => /kofi/.test(l)).slice(-3).join(" | "));
+  ok("a reply from IT is emailed to the requester", /\[mail\] to=kofi\.mensah@[^\n]*\n?[\s\S]{0,80}from IT replied:\s+> Is the power light on at the back\?/.test(log), log.split("\n").filter((l) => /kofi/.test(l)).slice(-3).join(" | "));
   ok("…and says they can answer by replying", /Reply to this email to answer/.test(log));
   ok("an internal note is never emailed", !/probably the lamp/.test(log));
   ok("the person who emailed gets a 'we have it' with the reference", new RegExp(`\\[mail\\] to=kofi\\.mensah@[^\\n]*subject="\\[${et.ref}\\][^\\n]*\\n?[\\s\\S]{0,80}raised a ticket`).test(log));
@@ -1177,13 +1217,394 @@ const ST = "/api/staff/tickets";
   }
 }
 
+// ================= ticket emails (printed to the log in tests: MAIL_LOG_ONLY) =================
+{
+  const RQ = globalThis.__rq;
+  const meR = (await req("GET", "/api/me", undefined, RQ)).json;
+  const waitLog = async (re, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (re.test(log)) return true; await new Promise((r) => setTimeout(r, 200)); } return re.test(log); };
+  const quiet = (ms = 3500) => new Promise((r) => setTimeout(r, ms));
+  const adminRow = dbq("select id, name from users where email = ?", ADMIN)[0];
+  const BS = String.fromCharCode(92);
+  const esc = (t) => [...t].map((ch) => (".*+?^$(){}|[]" + BS).includes(ch) ? BS + ch : ch).join("");
+
+  // the requester gets a confirmation for a ticket raised on the web
+  const tk = (await req("POST", "/api/tickets", { title: "Mailtest monitor flicker", description: "The screen flickers", category_id: 5 }, RQ)).json;
+  ok("a requester is emailed that their web ticket was received", await waitLog(new RegExp("\\[mail\\] to=" + esc(meR.email) + " subject=\"\\[" + tk.ref + "\\] Mailtest monitor flicker\" :: [^\\n]*Hi Kofi,\\s+We have your ticket")), tk.ref);
+  ok("the admin is emailed about the new ticket (it was unread: nobody is at the helpdesk in a test)", await waitLog(new RegExp("\\[mail\\] to=" + esc(ADMIN) + " subject=\"[^\"]*\" :: (?:(?!\\[mail\\])[^])*New ticket " + tk.ref + "[:\\n]"), 8000), (log.match(/\[mail\] to=admin@[^\n]*/g) ?? []).slice(-3).join(" | "));
+  ok("every email is branded plain text too (name and footer)", /Fortress Oil & Gas Helpdesk\nYou get these emails because of a ticket you raised/.test(log));
+
+  // a reply from IT is emailed with the words, and the status change too
+  await req("POST", ST + "/" + tk.id + "/comments", { body: "Please try a different cable, then tell me.", internal: false }, A);
+  ok("IT's reply reaches the requester by email with the text", await waitLog(new RegExp("\\[mail\\] to=" + esc(meR.email) + " subject=\"\\[" + tk.ref + "\\][^\\n]*:: [^]*?replied:\\s+> Please try a different cable")));
+  await req("PATCH", ST + "/" + tk.id, { status: "resolved" }, A);
+  ok("a status change reaches the requester, and 'resolved' says what to do if it is not fixed", await waitLog(/is now Resolved[^]*?If it is not fixed, open the ticket/));
+
+  // a person who switched emails off gets none, and everything still works
+  let x = await req("PATCH", "/api/me/preferences", { email_notify: false }, RQ);
+  ok("a requester can switch ticket emails off", x.code === 200 && x.json.email_notify === false && (await req("GET", "/api/me", undefined, RQ)).json.email_notify === false);
+  ok("…and a nonsense value is refused (400)", (await req("PATCH", "/api/me/preferences", { email_notify: "no" }, RQ)).code === 400);
+  const before = log.length;
+  await req("POST", ST + "/" + tk.id + "/comments", { body: "SECRET-WORDS-NOT-MAILED", internal: false }, A);
+  await req("PATCH", ST + "/" + tk.id, { status: "in_progress" }, A);
+  await quiet();
+  ok("…so a reply and a status change are not emailed to them", !/SECRET-WORDS-NOT-MAILED/.test(log.slice(before)) && !new RegExp("to=" + esc(meR.email)).test(log.slice(before)));
+  ok("…and the events are marked done, not left to pile up", dbq("select count(*) n from ticket_events where ticket_id = ? and notified = 0 and field in ('status','reply')", tk.id)[0].n === 0);
+  await req("PATCH", "/api/me/preferences", { email_notify: true }, RQ);
+
+  // staff: one email for several things, nothing for what they have read, nothing when switched off
+  const esi = dbq("select id from users where email = ?", "esi.agent@" + DOMAIN)[0].id;
+  dbx("insert into notifications (user_id, ticket_id, kind, title, body) values (?, null, 'new_ticket', 'DIGEST-ONE', 'first thing'), (?, null, 'assigned', 'DIGEST-TWO', 'second thing'), (?, null, 'message', 'DIGEST-THREE', 'third thing')", esi, esi, esi);
+  dbx("insert into notifications (user_id, ticket_id, kind, title, body, read_at) values (?, null, 'new_ticket', 'ALREADY-READ-ONE', 'seen', unixepoch())", esi);
+  ok("several waiting things become ONE email", await waitLog(/to=esi\.agent@[^ ]+ subject="3 updates waiting on the helpdesk" :: [^]*?DIGEST-ONE[^]*?DIGEST-TWO[^]*?DIGEST-THREE/));
+  ok("…and the same email is not sent twice", (log.match(/to=esi\.agent@[^ ]+ subject="3 updates waiting on the helpdesk"/g) ?? []).length === 1);
+  await quiet(2500);
+  ok("a notification they already read is never emailed", !/ALREADY-READ-ONE/.test(log));
+  ok("…and the rows are marked emailed", dbq("select count(*) n from notifications where user_id = ? and emailed = 0", esi)[0].n === 0);
+  x = await req("PATCH", "/api/staff/profile", { email_notify: false }, GE);
+  ok("an agent can switch their emails off (their name is untouched)", x.code === 200 && x.json.email_notify === false && (await req("GET", "/api/staff/me", undefined, GE)).json.email_notify === false);
+  dbx("insert into notifications (user_id, ticket_id, kind, title, body) values (?, null, 'new_ticket', 'SWITCHED-OFF-ONE', 'nope')", esi);
+  await quiet();
+  ok("…and then they are not emailed", !/SWITCHED-OFF-ONE/.test(log));
+  await req("PATCH", "/api/staff/profile", { email_notify: true }, GE);
+  ok("a bell-only kind (like a status tick) is never emailed to staff", (() => { dbx("insert into notifications (user_id, ticket_id, kind, title, body) values (?, null, 'status', 'BELL-ONLY-ONE', 'x')", esi); return true; })() && !(await waitLog(/BELL-ONLY-ONE/, 3000)));
+
+  // the admin's test email and mail status
+  x = await req("GET", "/api/admin/system", undefined, A);
+  ok("the system page reports the mail transport and the last success", x.json.mail_status.transport === "log" && x.json.mail_status.last_ok_at > 0 && x.json.mail_status.last_error === null && x.json.admin_email === ADMIN, JSON.stringify(x.json.mail_status));
+  x = await req("POST", "/api/admin/system/test-email", {}, A);
+  ok("an admin can send a test email to themselves", x.code === 200 && x.json.to === ADMIN && x.json.via === "log" && await waitLog(new RegExp("to=" + esc(ADMIN) + " subject=\"Test email from the Fortress Oil & Gas Helpdesk\"")));
+  ok("a bad address is refused (400)", (await req("POST", "/api/admin/system/test-email", { to: "not an address" }, A)).code === 400);
+  ok("an agent can't use it (404)", (await req("POST", "/api/admin/system/test-email", {}, GE)).code === 404);
+  ok("the test is in the activity log", dbq("select count(*) n from audit_log where action = 'system.test_email'")[0].n === 1);
+  ok("switching emails off is in the activity log", dbq("select count(*) n from audit_log where action = 'account.email_notify'")[0].n >= 3);
+}
+
+// ================= updates, system page, backups, hardware-script addresses =================
+{
+  const openS = async (p, session) => {
+    const ac = new AbortController();
+    const res = await fetch(BASE + p, { headers: { cookie: session.cookie }, signal: ac.signal });
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "", pending = null;
+    const waitFor = async (needle, ms = 3000) => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        if (buf.includes(needle)) return true;
+        pending ??= reader.read().then((c) => { pending = null; if (c.value) buf += dec.decode(c.value); }, () => { pending = null; });
+        await Promise.race([pending, new Promise((r) => setTimeout(r, 100))]);
+      }
+      return buf.includes(needle);
+    };
+    return { res, waitFor, close: () => ac.abort(), text: () => buf };
+  };
+  const adminId = dbq("select id from users where email = ?", ADMIN)[0].id;
+
+  // the version, to everybody
+  let x = await req("GET", "/api/config");
+  const ver = x.json.system?.version;
+  ok("the public config says which version runs (and that no update is announced)", x.code === 200 && typeof ver === "string" && ver.length > 0 && x.json.system.maintenance === null && x.json.system.restarting === false);
+  x = await req("GET", "/healthz");
+  ok("the health check carries the version too", x.json.ok === true && x.json.version === ver);
+  x = await req("GET", "/api/admin/system", undefined, A);
+  ok("the admin system page reports version, uptime, sizes and mail mode", x.code === 200 && x.json.version === ver && x.json.started_at > 0 && x.json.db_bytes > 0 && x.json.mail === "log", JSON.stringify(x.json).slice(0, 160));
+  ok("an agent gets a plain 404 for it", (await req("GET", "/api/admin/system", undefined, GE)).code === 404);
+  ok("signed out is 401", (await req("GET", "/api/admin/system")).code === 401);
+
+  // every stream starts with the version, and hears about an announced update
+  const sa = await openS("/api/staff/stream", A);
+  ok("a stream's first message carries the version", (await sa.waitFor("event: hello")) && sa.text().includes('"version":"' + ver + '"'));
+  const RS = globalThis.__rq; // a normal user who is still signed in
+  const sr = await openS("/api/stream", RS);
+  await sr.waitFor("event: hello");
+  x = await req("POST", "/api/admin/system/maintenance", { minutes: 0 }, A);
+  ok("an announcement needs 1 to 240 minutes (400)", x.code === 400);
+  ok("an agent can't announce (404)", (await req("POST", "/api/admin/system/maintenance", { minutes: 5 }, GE)).code === 404);
+  x = await req("POST", "/api/admin/system/maintenance", { minutes: 5, message: "New ticket form" }, A);
+  ok("an admin announces an update in 5 minutes", x.code === 200 && x.json.maintenance?.message === "New ticket form" && Math.abs(x.json.maintenance.at - (Date.now() + 300000)) < 15000);
+  ok("a signed-in requester's open screen hears about it at once", await sr.waitFor('"message":"New ticket form"'));
+  ok("…and so does a page that loads later (public config)", (await req("GET", "/api/config")).json.system.maintenance?.message === "New ticket form");
+  ok("…and the system page shows it", (await req("GET", "/api/admin/system", undefined, A)).json.maintenance?.message === "New ticket form");
+  ok("the announcement is in the activity log", dbq("select count(*) n from audit_log where action = 'system.announce'")[0].n === 1);
+  x = await req("DELETE", "/api/admin/system/maintenance", undefined, A);
+  ok("cancelling clears it everywhere", x.code === 200 && (await req("GET", "/api/config")).json.system.maintenance === null);
+  sr.close();
+
+  // backups
+  x = await req("GET", "/api/admin/backups", undefined, A);
+  ok("backups: nothing yet, and automatic backups are on", x.code === 200 && x.json.enabled === true && x.json.files.length === 0 && x.json.healthy === false && x.json.inside_data === true, JSON.stringify(x.json).slice(0, 200));
+  ok("an agent can't see backups (404)", (await req("GET", "/api/admin/backups", undefined, GE)).code === 404);
+  ok("an agent can't start one (404)", (await req("POST", "/api/admin/backups/run", undefined, GE)).code === 404);
+  x = await req("POST", "/api/admin/backups/run", undefined, A);
+  const file = x.json.file;
+  ok("an admin can back up now", x.code === 200 && x.json.ok === true && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(file) && x.json.bytes > 1000, JSON.stringify(x.json));
+  x = await req("GET", "/api/admin/backups", undefined, A);
+  ok("it is listed and the status is healthy", x.json.files.length === 1 && x.json.files[0].name === file && x.json.healthy === true && x.json.last_ok?.file === file);
+  const dl = await fetch(BASE + "/api/admin/backups/" + file, { headers: { cookie: A.cookie } });
+  const gz = Buffer.from(await dl.arrayBuffer());
+  const raw = (await import("node:zlib")).gunzipSync(gz);
+  ok("the download is gzip and unpacks to a SQLite database", dl.status === 200 && /gzip/.test(dl.headers.get("content-type")) && raw.subarray(0, 15).toString() === "SQLite format 3");
+  const restored = path.join(DATA, "restore-check.db");
+  fs.writeFileSync(restored, raw);
+  const rdb = new DatabaseSync(restored);
+  const hasAdmin = rdb.prepare("select count(*) n from users where email = ?").get(ADMIN).n === 1;
+  rdb.close(); fs.rmSync(restored, { force: true });
+  ok("and the copy contains the data (the admin account is in it)", hasAdmin);
+  ok("a file name that isn't a backup is refused (404)", (await req("GET", "/api/admin/backups/..%2f..%2fhelpdesk.db", undefined, A)).code === 404 && (await req("GET", "/api/admin/backups/helpdesk.db", undefined, A)).code === 404);
+  ok("an agent can't download one (404)", (await req("GET", "/api/admin/backups/" + file, undefined, GE)).code === 404);
+  ok("backups and downloads are in the activity log", ["backup.ok", "backup.download"].every((a) => dbq("select count(*) n from audit_log where action = ?", a)[0].n >= 1));
+
+  // the hardware script knows more than one address
+  const DVK = globalThis.__rq;
+  x = await req("POST", "/api/devices/inventory-link", { key: "aaaabbbbccccddddeeeeffff00001111" }, DVK);
+  const tk = x.code === 200 ? new URL(x.json.cmd_url).searchParams.get("t") : "";
+  x = await req("GET", "/api/devices/script.ps1?t=" + tk);
+  const urls = (x.json.match(/\$urls = @\((.*)\)/) ?? [])[1] ?? "";
+  ok("the report script tries the address the browser used first, then the configured ones", x.code === 200 && urls.startsWith("'" + BASE + "'") && urls.includes("'http://helpdesk.fortress.test'"), urls);
+  ok("…each is tried in turn and the failure lists them all", x.json.includes("foreach ($u in $urls)") && x.json.includes("Could not send the report. Tried:") && !x.json.includes("__URL"));
+
+  // an update while the server was off: set up for the restart below
+  dbx("update settings set value = 'previous-build' where key = 'app_version'");
+  globalThis.__restartStream = await openS("/api/staff/stream", A);
+  await globalThis.__restartStream.waitFor("event: hello");
+  globalThis.__ver = ver;
+  sa.close();
+}
+
+// ================= address and email setup from the admin page (overrides .env, secrets never come back) =================
+{
+  const S = "/api/admin/system/settings";
+  const RQ = globalThis.__rq;
+  const waitLog = async (re, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (re.test(log)) return true; await new Promise((r) => setTimeout(r, 200)); } return re.test(log); };
+  let x = await req("GET", S, undefined, A);
+  ok("the setup page reads what .env gave: trial mail, no saved address", x.code === 200 && x.json.mail.mode === "log" && x.json.mail.source === "env" && x.json.address.source === "env" && x.json.address.app_url === "" && x.json.address.alt_urls.includes("http://helpdesk.fortress.test"), JSON.stringify(x.json));
+  ok("an agent gets a plain 404, signed out gets 401", (await req("GET", S, undefined, GE)).code === 404 && (await req("PUT", S, { address: { app_url: "http://x.test" } }, GE)).code === 404 && (await req("GET", S)).code === 401);
+
+  // validation
+  ok("nothing to save is refused (400)", (await req("PUT", S, {}, A)).code === 400);
+  ok("a badly written address is refused (400)", (await req("PUT", S, { address: { app_url: "helpdesk.test" } }, A)).code === 400 && (await req("PUT", S, { address: { app_url: "http://a.test/path?x=1" } }, A)).code === 400 && (await req("PUT", S, { address: { app_url: "http://a b.test" } }, A)).code === 400);
+  ok("an address with a quote in it (it ends up inside a script) is refused", (await req("PUT", S, { address: { app_url: "http://a.test", alt_urls: ["http://x.test'; calc; '"] } }, A)).code === 400);
+  x = await req("PUT", S, { address: { app_url: "https://helpdesk.test" } }, A);
+  ok("an https address can't be saved while you are on plain http (you would be signed out)", x.code === 400 && /plain http/.test(x.json.error));
+  ok("a made-up mode is refused", (await req("PUT", S, { mail: { mode: "carrier-pigeon" } }, A)).code === 400);
+  ok("SMTP needs a server, a sane port and a password for its username", (await req("PUT", S, { mail: { mode: "smtp", from: "h@x.test", smtp: { host: "", port: 587 } } }, A)).code === 400 && (await req("PUT", S, { mail: { mode: "smtp", from: "h@x.test", smtp: { host: "mail.x.test", port: 99999 } } }, A)).code === 400 && (await req("PUT", S, { mail: { mode: "smtp", from: "h@x.test", smtp: { host: "mail.x.test", port: 587, user: "h@x.test" } } }, A)).code === 400);
+  ok("Microsoft 365 needs real-looking IDs, a secret and a mailbox", (await req("PUT", S, { mail: { mode: "graph", graph: { tenant_id: "nope", client_id: "nope", sender: "h@x.test" } } }, A)).code === 400 && (await req("PUT", S, { mail: { mode: "graph", graph: { tenant_id: "0a1b2c3d-0000-4000-8000-000000000001", client_id: "0a1b2c3d-0000-4000-8000-000000000002", sender: "h@x.test" } } }, A)).code === 400);
+  ok("the From address must be an address", (await req("PUT", S, { mail: { mode: "log", from: "not an address" } }, A)).code === 400);
+
+  // the address: saved, in force at once, in the report script and in email links
+  x = await req("PUT", S, { address: { app_url: "http://helpdesk.fortress.test:8080/", alt_urls: "http://10.0.0.5:3000, http://nas.fortress.test", trust_proxy: false } }, A);
+  ok("an admin saves the address (trailing slash dropped)", x.code === 200 && x.json.address.app_url === "http://helpdesk.fortress.test:8080" && x.json.address.alt_urls.length === 2 && x.json.address.source === "saved", JSON.stringify(x.json.address));
+  ok("the system page shows the saved address", (await req("GET", "/api/admin/system", undefined, A)).json.app_url === "http://helpdesk.fortress.test:8080");
+  const lk = await req("POST", "/api/devices/inventory-link", { key: "99998888777766665555444433332222" }, RQ);
+  const tk0 = lk.code === 200 ? new URL(lk.json.cmd_url).searchParams.get("t") : "";
+  const sc = (await req("GET", "/api/devices/script.ps1?t=" + tk0)).json;
+  ok("the hardware script now tries the saved address and the other addresses too", typeof sc === "string" && sc.includes("'http://helpdesk.fortress.test:8080'") && sc.includes("'http://10.0.0.5:3000'") && sc.includes("'http://nas.fortress.test'"));
+  const tkn = (await req("POST", "/api/tickets", { title: "Setup page link test", description: "x", category_id: 5 }, RQ)).json;
+  ok("emails now carry a button straight to the ticket", await waitLog(new RegExp("Open my ticket: http://helpdesk\\.fortress\\.test:8080/\\?t=" + tkn.id + "\\b")));
+
+  // email: SMTP with a password, which is stored encrypted and never returned
+  const PASS = "s3cret-Smtp-passw0rd";
+  x = await req("PUT", S, { mail: { mode: "smtp", from: "helpdesk@fortress.test", smtp: { host: "127.0.0.1", port: 1, secure: false, user: "helpdesk@fortress.test", pass: PASS } } }, A);
+  ok("an admin saves SMTP settings", x.code === 200 && x.json.mail.mode === "smtp" && x.json.mail.smtp.host === "127.0.0.1" && x.json.mail.smtp.has_pass === true && x.json.mail.source === "saved", JSON.stringify(x.json.mail));
+  ok("the password is never in any response", !JSON.stringify(x.json).includes(PASS) && !JSON.stringify((await req("GET", S, undefined, A)).json).includes(PASS) && !JSON.stringify((await req("GET", "/api/admin/system", undefined, A)).json).includes(PASS));
+  const raw = dbq("select value from settings where key = 'app_settings'")[0].value;
+  ok("…and it is encrypted in the database", !raw.includes(PASS) && raw.includes("enc1:"));
+  x = await req("PUT", S, { mail: { mode: "smtp", from: "helpdesk@fortress.test", smtp: { host: "127.0.0.1", port: 1, secure: false, user: "helpdesk@fortress.test", pass: "" } } }, A);
+  ok("saving again with the password box empty keeps the saved password", x.code === 200 && x.json.mail.smtp.has_pass === true);
+  ok("the system page now says SMTP", (await req("GET", "/api/admin/system", undefined, A)).json.mail === "smtp");
+  x = await req("POST", "/api/admin/system/test-email", {}, A);
+  ok("a test email to an unreachable server fails with the real reason, not silence (502)", x.code === 502 && /ECONNREFUSED|connect/i.test(x.json.error), JSON.stringify(x.json));
+  const info = (await req("GET", "/api/admin/system", undefined, A)).json.mail_status;
+  ok("…and the failure is shown on the system page", /smtp/.test(info.last_error ?? "") && info.last_error_at > 0, JSON.stringify(info));
+  ok("settings changes are in the activity log, without any secret", dbq("select count(*) n from audit_log where action = 'system.settings'")[0].n >= 3 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes(PASS));
+
+  // Microsoft 365 values are kept too, secret hidden
+  x = await req("PUT", S, { mail: { mode: "graph", from: "", graph: { tenant_id: "0a1b2c3d-0000-4000-8000-000000000001", client_id: "0a1b2c3d-0000-4000-8000-000000000002", client_secret: "graph~Secret.value", sender: "helpdesk@fortress.test" } } }, A);
+  ok("an admin saves Microsoft 365 settings (and SMTP is switched off)", x.code === 200 && x.json.mail.mode === "graph" && x.json.mail.graph.has_secret === true && x.json.mail.smtp.host === "" && !JSON.stringify(x.json).includes("graph~Secret"), JSON.stringify(x.json.mail));
+
+  // back to trial mode for the rest of the suite; it must survive a restart (checked after the restart below)
+  x = await req("PUT", S, { mail: { mode: "log", from: "helpdesk@fortress.test" } }, A);
+  ok("back to trial mode", x.code === 200 && x.json.mail.mode === "log" && x.json.mail.smtp.host === "" && x.json.mail.graph.client_id === "");
+}
+
+// ================= sign in with Microsoft 365 (against the pretend Microsoft above) =================
+{
+  const S = "/api/admin/system/settings";
+  const RQ = globalThis.__rq;
+  /** GET without following redirects, keeping cookies like a browser would. */
+  const getRaw = async (url, session) => {
+    const res = await fetch(url, { redirect: "manual", headers: session.cookie ? { cookie: session.cookie } : {} });
+    for (const sc of res.headers.getSetCookie?.() ?? []) {
+      const [pair] = sc.split(";"); const [n, ...v] = pair.split("=");
+      const gone = /max-age=0/i.test(sc) || v.join("") === "";
+      session.cookie = [...session.cookie.split("; ").filter((x) => x && !x.startsWith(n + "=")), ...(gone ? [] : [pair])].join("; ");
+    }
+    return { code: res.status, loc: res.headers.get("location"), text: await res.text() };
+  };
+  /** The whole dance: our /start, the pretend Microsoft, our /callback. Returns where the page then moves on to. */
+  const login = async (portal, who, session = jar(), extra = "") => {
+    idp.next = who;
+    const a = await getRaw(BASE + "/api/auth/microsoft/start?portal=" + portal + extra, session);
+    if (a.code !== 302) return { session, target: (a.text.match(/url=([^"]+)"/) ?? [])[1]?.replace(/&#38;/g, "&") ?? "", first: a };
+    const b = await getRaw(a.loc, session);
+    const c = await getRaw(b.loc, session);
+    return { session, target: (c.text.match(/url=([^"]+)"/) ?? [])[1]?.replace(/&#38;/g, "&") ?? "", first: a, cb: c };
+  };
+  const user = (email) => dbq("select * from users where email = ?", email)[0];
+  const AMA = { oid: "oid-ama-0001", email: "ama.mensah@" + DOMAIN, name: "Ama Mensah", job: "Accountant", dept: "Finance" };
+
+  // not set up yet
+  let r = await login("user", AMA);
+  ok("with no Microsoft app set up, signing in says so instead of failing oddly", r.first.code === 200 && r.target === "/?login_error=sso_off", r.target);
+  ok("the public config says it is not available", (await req("GET", "/api/config")).json.sso.available === false);
+
+  // the admin sets it up
+  let x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: "nope", client_id: CLIENT, client_secret: CSECRET } }, A);
+  ok("ids must look like ids (400)", x.code === 400);
+  ok("reusing the email app is refused while email isn't on Microsoft 365 (400)", (await req("PUT", S, { sso: { use_mail_app: true } }, A)).code === 400);
+  ok("an agent can't change it (404)", (await req("PUT", S, { sso: { tenant_id: TENANT } }, GE)).code === 404);
+  x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: TENANT, client_id: CLIENT, client_secret: CSECRET, enforced: false } }, A);
+  ok("an admin saves the Microsoft app (tenant, client, secret)", x.code === 200 && x.json.sso.configured === true && x.json.sso.has_secret === true && x.json.sso.enforced === false && x.json.sso.verified_at === null, JSON.stringify(x.json.sso));
+  ok("the secret is never returned and is encrypted at rest", !JSON.stringify(x.json).includes(CSECRET) && !dbq("select value from settings where key = 'app_settings'")[0].value.includes(CSECRET));
+  x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: TENANT, client_id: CLIENT, client_secret: "", enforced: true } }, A);
+  ok("it can't be switched on for everyone before an admin has signed in with it (400)", x.code === 400 && /Test sign-in/.test(x.json.error), JSON.stringify(x.json));
+  ok("the public config says it is available, not enforced", (await req("GET", "/api/config")).json.sso.available === true && (await req("GET", "/api/config")).json.sso.enforced === false);
+  {
+    // the way back is the SAVED address (what gets registered in Entra), not whatever the browser happens to be on
+    idp.next = { oid: "oid-probe", email: "probe@" + DOMAIN, name: "Probe" };
+    const j = jar();
+    const a = await getRaw(BASE + "/api/auth/microsoft/start?portal=user", j);
+    await getRaw(a.loc, j);
+    ok("the way back uses the saved address, which is what gets registered in Entra", idp.authorizeSeen.redirect_uri === "http://helpdesk.fortress.test:8080/api/auth/microsoft/callback", idp.authorizeSeen.redirect_uri);
+    await req("PUT", S, { address: { app_url: "", alt_urls: [], trust_proxy: false } }, A); // for the rest of this block, use the address the test is on
+  }
+
+  // a normal user: the account is created from their Microsoft profile
+  r = await login("user", AMA, jar(), "&t=42");
+  ok("a new person signs in: the account is made and they go to their ticket with the welcome flag", r.target === "/?t=42&welcome=1", r.target);
+  const q = idp.authorizeSeen;
+  ok("the browser is sent to Microsoft with PKCE, a state, a nonce and the registered address", q.client_id === CLIENT && q.code_challenge_method === "S256" && q.code_challenge.length >= 43 && q.state.length >= 20 && q.nonce.length >= 20 && q.response_type === "code" && /openid/.test(q.scope) && q.redirect_uri === BASE + "/api/auth/microsoft/callback", JSON.stringify(q));
+  ok("the code was exchanged with the secret, the verifier and the same redirect address", idp.exchange.secretOk && idp.exchange.pkceOk && idp.exchange.redirOk && idp.exchange.clientOk);
+  const me = (await req("GET", "/api/me", undefined, r.session)).json;
+  ok("they are signed in as a requester with their Microsoft details", me.email === AMA.email && me.name === "Ama Mensah" && me.ms_linked === true && me.job_title === "Accountant" && me.department === "Finance" && me.has_pin === false, JSON.stringify(me));
+  ok("the account is linked and has no PIN or password", user(AMA.email).role === "requester" && user(AMA.email).ms_oid === AMA.oid && user(AMA.email).pin_hash === null);
+  const r2 = await login("user", AMA);
+  ok("signing in again goes home and doesn't duplicate the account", r2.target === "/" && dbq("select count(*) n from users where email = ?", AMA.email)[0].n === 1);
+  ok("both sign-ins are in the activity log", dbq("select count(*) n from audit_log where action = 'signin.microsoft'")[0].n >= 2 && dbq("select count(*) n from audit_log where action = 'account.registered' and summary like '%Microsoft%'")[0].n === 1);
+
+  // an account that already exists (made with a PIN) is linked by its email
+  const kofi = user("kofi.files@" + DOMAIN);
+  const KOFI = { oid: "oid-kofi-0002", email: "kofi.files@" + DOMAIN, name: "Kofi Files", job: "Surveyor" };
+  r = await login("user", KOFI);
+  ok("someone who already had an account is linked to it, not duplicated", r.target === "/" && user(KOFI.email).id === kofi.id && user(KOFI.email).ms_oid === KOFI.oid && dbq("select count(*) n from audit_log where action = 'account.ms_linked'")[0].n === 1);
+  ok("…and sees their old tickets", (await req("GET", "/api/tickets", undefined, r.session)).json.length >= 1);
+  r = await login("user", { oid: "oid-someone-else", email: KOFI.email, name: "Not Kofi" });
+  ok("a different Microsoft account claiming that email is refused (mismatch), no session", r.target === "/?login_error=mismatch" && !r.session.cookie.includes("fg_user"));
+  r = await login("user", { oid: KOFI.oid, email: AMA.email, name: "Kofi Files" });
+  ok("a Microsoft account whose email now belongs to a different helpdesk account is refused too", r.target === "/?login_error=mismatch" && user(KOFI.email).id === kofi.id);
+  r = await login("user", { oid: "oid-outsider", email: "outsider@gmail.com", name: "Outsider" });
+  ok("an address outside the company domain is refused", r.target === "/?login_error=wrong_domain" && !user("outsider@gmail.com"));
+  dbx("update users set active = 0 where email = ?", AMA.email);
+  r = await login("user", AMA);
+  ok("a disabled account can't sign in", r.target === "/?login_error=disabled");
+  dbx("update users set active = 1 where email = ?", AMA.email);
+  r = await login("user", { error: "access_denied" });
+  ok("pressing Cancel at Microsoft comes back with a clear message", r.target === "/?login_error=cancelled");
+  idp.badAud = true; r = await login("user", AMA); idp.badAud = false;
+  ok("an identity token for another app is refused", r.target === "/?login_error=failed");
+  idp.badNonce = true; r = await login("user", AMA); idp.badNonce = false;
+  ok("a token with the wrong nonce is refused", r.target === "/?login_error=failed");
+  idp.graphDown = true; r = await login("user", { oid: "oid-nograph", email: "no.graph@" + DOMAIN, name: "No Graph" }); idp.graphDown = false;
+  ok("if Microsoft's profile service is down the identity token is enough", r.target === "/?welcome=1" && user("no.graph@" + DOMAIN).job_title === null);
+  const ng = user("no.graph@" + DOMAIN);
+  r = await login("user", { oid: "oid-nograph", email: "renamed.person@" + DOMAIN, name: "No Graph" });
+  ok("when someone's address changes in Microsoft 365 they still get in, and the account follows", r.target === "/" && user("renamed.person@" + DOMAIN)?.id === ng.id && !user("no.graph@" + DOMAIN) && dbq("select count(*) n from audit_log where action = 'account.email_changed'")[0].n === 1);
+  const bare = jar();
+  const cb = await getRaw(BASE + "/api/auth/microsoft/callback?code=abc&state=def", bare);
+  ok("a callback that never started here (no cookie) is refused", /login_error=expired/.test(cb.text));
+  const j3 = jar();
+  const st = await getRaw(BASE + "/api/auth/microsoft/start?portal=user", j3);
+  const cb2 = await getRaw(BASE + "/api/auth/microsoft/callback?code=abc&state=tampered", j3);
+  ok("…and so is one with the wrong state", /login_error=expired/.test(cb2.text) && st.code === 302);
+  const j4 = jar();
+  idp.next = AMA;
+  const s4 = await getRaw(BASE + "/api/auth/microsoft/start?portal=user", j4);
+  const cbUrl = (await getRaw(s4.loc, j4)).loc;
+  const copy = () => Object.assign(jar(), { cookie: j4.cookie });
+  const first = await getRaw(cbUrl, copy());
+  const replay = await getRaw(cbUrl, copy());
+  ok("a sign-in code works once: the same code used again is refused", /url=\/"/.test(first.text) && /login_error=failed/.test(replay.text), replay.text.slice(0, 160));
+
+  // staff: only existing accounts, in their own portal
+  const esiRow = user("esi.agent@" + DOMAIN);
+  r = await login("agent", { oid: "oid-esi-0003", email: esiRow.email, name: "Esi Agent" });
+  ok("an agent signs in at /agent with Microsoft", r.target === "/agent", r.target);
+  let sm = (await req("GET", "/api/staff/me", undefined, r.session)).json;
+  ok("…as an agent, and their chosen name is kept", sm.role === "agent" && sm.email === esiRow.email && sm.name === esiRow.name && sm.must_change_password === false, JSON.stringify(sm));
+  r = await login("agent", { oid: "oid-nobody-0004", email: "not.staff@" + DOMAIN, name: "Not Staff" });
+  ok("a Microsoft account nobody added as staff can't get into /agent, and no account is made", r.target === "/agent?login_error=not_staff" && !user("not.staff@" + DOMAIN));
+  r = await login("admin", { oid: "oid-esi-0003", email: esiRow.email, name: "Esi Agent" });
+  ok("an agent can't get into /admin", r.target === "/admin?login_error=not_staff");
+  r = await login("agent", { oid: "oid-ama-0001", email: AMA.email, name: "Ama Mensah" });
+  ok("a normal user can't get into /agent", r.target === "/agent?login_error=not_staff");
+
+  // a staff account with a temporary password still pending: Microsoft sign-in retires that password
+  const made = await req("POST", "/api/admin/users", { name: "Yaw Temp", email: "yaw.temp@" + DOMAIN, role: "agent" }, A);
+  r = await login("agent", { oid: "oid-yaw-0005", email: "yaw.temp@" + DOMAIN, name: "Yaw Temp" });
+  sm = (await req("GET", "/api/staff/me", undefined, r.session)).json;
+  ok("a new agent signs in with Microsoft without being asked to choose a password", made.code === 201 && r.target === "/agent" && sm.must_change_password === false);
+  ok("…and the temporary password no longer works", (await req("POST", "/api/staff/login", { email: "yaw.temp@" + DOMAIN, password: made.json.temp_password, portal: "agent" }, jar())).code === 401);
+
+  // an admin signs in: this proves it works, which unlocks "switch off the old sign-ins"
+  r = await login("admin", { oid: "oid-admin-0006", email: ADMIN, name: "Admin" });
+  const SA = r.session;
+  ok("an admin signs in at /admin with Microsoft", r.target === "/admin" && (await req("GET", "/api/staff/me", undefined, SA)).json.role === "admin", r.target);
+  x = await req("GET", S, undefined, A);
+  ok("…which records that Microsoft sign-in has been seen working", x.json.sso.verified_at > 0, JSON.stringify(x.json.sso));
+
+  // switch the old sign-ins off
+  x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: TENANT, client_id: CLIENT, client_secret: "", enforced: true } }, A);
+  ok("now the admin can make Microsoft the only way in", x.code === 200 && x.json.sso.enforced === true && x.json.sso.verified_at > 0, JSON.stringify(x.json.sso));
+  ok("the public config says so", (await req("GET", "/api/config")).json.sso.enforced === true);
+  x = await req("POST", "/api/identify", { name: "Pin Person", email: "pin.person@" + DOMAIN, new_pin: "573918" }, jar());
+  ok("names and PINs no longer open an account (403 sso_required)", x.code === 403 && x.json.error === "sso_required" && !user("pin.person@" + DOMAIN));
+  x = await req("POST", "/api/staff/login", { email: esiRow.email, password: "whatever-whatever", portal: "agent" }, jar());
+  ok("agents can no longer use a password", x.code === 401 && x.json.error === "incorrect");
+  x = await req("POST", "/api/staff/login", { email: ADMIN, password: ADMIN_PW, portal: "admin" }, jar());
+  ok("an admin still can (the way back in if Microsoft is down)", x.code === 200, JSON.stringify(x.json));
+  r = await login("user", { oid: "oid-late-0007", email: "late.joiner@" + DOMAIN, name: "Late Joiner" });
+  ok("Microsoft sign-in keeps working for new people", r.target === "/?welcome=1" && !!user("late.joiner@" + DOMAIN));
+  ok("an existing session keeps working", (await req("GET", "/api/me", undefined, RQ)).code === 200);
+
+  // changing the credentials makes admins test again before enforcing
+  x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: TENANT, client_id: CLIENT, client_secret: "a-new-secret", enforced: true } }, A);
+  ok("changing the secret needs a fresh test before it can stay enforced (400)", x.code === 400 && /Test sign-in/.test(x.json.error), JSON.stringify(x.json));
+  x = await req("PUT", S, { sso: { use_mail_app: false, tenant_id: TENANT, client_id: CLIENT, client_secret: CSECRET, enforced: false } }, A);
+  ok("…and with the right secret back, un-enforcing works", x.code === 200 && x.json.sso.enforced === false && x.json.sso.configured === true, JSON.stringify(x.json.sso));
+  ok("the old sign-ins are back (the rest of the suite uses them)", (await req("GET", "/api/config")).json.sso.enforced === false && (await req("GET", S, undefined, A)).json.sso.enforced === false && (await req("POST", "/api/staff/login", { email: "nobody@" + DOMAIN, password: "x-x-x-x-x-x-x-x", portal: "agent" }, jar())).code === 401);
+  await req("PUT", S, { address: { app_url: "http://helpdesk.fortress.test:8080/", alt_urls: "http://10.0.0.5:3000, http://nas.fortress.test", trust_proxy: false } }, A); // as the earlier block left it
+  ok("the activity log shows the Microsoft settings changes, without secrets",dbq("select count(*) n from audit_log where action = 'system.settings' and summary like '%Microsoft%'")[0].n >= 2 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes(CSECRET));
+}
+
 // ================= brute-force limiter (real default: 15 sign-in attempts per 10 minutes per address) =================
 {
   const gone = new Promise((rs) => server.once("exit", rs));
   server.kill("SIGTERM");
+  if (process.platform === "win32") console.log("skip  open screens are told the server is restarting (Windows ends a child process without running its shutdown handler; checked on Linux/Docker)");
+  else ok("when the server is stopped, open screens are told it is restarting (before it goes)", await globalThis.__restartStream.waitFor('"restarting":true', 3000));
   await gone;
+  globalThis.__restartStream.close();
   server = start({ LOGIN_RATE_LIMIT: "15" });
   ok("server restarts with the default limiter", await waitUp());
+  {
+    const sv = await req("GET", "/api/admin/system/settings", undefined, A);
+    ok("saved address and mail settings survive a restart and still override .env", sv.code === 200 && sv.json.address.app_url === "http://helpdesk.fortress.test:8080" && sv.json.address.source === "saved" && sv.json.mail.mode === "log" && sv.json.mail.source === "saved" && sv.json.mail.from === "helpdesk@fortress.test", JSON.stringify(sv.json));
+  }
+  {
+    const adminId = dbq("select id from users where email = ?", ADMIN)[0].id;
+    const upd = dbq("select title, body from notifications where user_id = ? and kind = 'update'", adminId);
+    ok("a new version after a restart tells the admin (bell)", upd.length === 1 && upd[0].title === "Helpdesk updated" && upd[0].body.includes(globalThis.__ver), JSON.stringify(upd));
+    ok("…and writes it in the activity log and remembers it", dbq("select count(*) n from audit_log where action = 'system.update' and actor_role = 'system'")[0].n === 1 && JSON.parse(dbq("select value from settings where key = 'last_update'")[0].value).from === "previous-build");
+  }
   // The response-target watcher runs a few seconds after start-up: it alerts once for a ticket close to its target and once for a late one.
   await new Promise((r) => setTimeout(r, 7500));
   {
@@ -1212,5 +1633,6 @@ const ST = "/api/staff/tickets";
 }
 
 server.kill("SIGTERM");
+idpServer.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -25,6 +25,11 @@ import { checklists, seedChecklists } from "./checklists";
 import { startRecurring } from "./recurring";
 import { inbound, startInbound } from "./inbound";
 import { serveWeb } from "./static";
+import { announceRestart, checkForUpdate } from "./system";
+import { startBackups } from "./backup";
+import { applyStoredSettings } from "./settings";
+import { sso } from "./sso";
+import { BUILD } from "./version";
 
 // Command-line recovery: `node dist-server/index.js reset-admin <email>` (see bootstrap.ts), then exit without starting the server.
 if (process.argv[2] === "reset-admin") {
@@ -63,10 +68,11 @@ app.use("/api/*", sameOrigin);
 
 app.get("/healthz", async (c) => {
   await db.prepare("SELECT 1").first();
-  return c.json({ ok: true });
+  return c.json({ ok: true, version: BUILD.id });
 });
 
 app.route("/api", publicConfig); // GET /config (public)
+app.route("/api/auth/microsoft", sso); // sign in with Microsoft 365: /start and /callback (browser navigations, no session needed)
 app.route("/api/inbound", inbound); // POST /email: mail relays, authenticated by INBOUND_SECRET (404 when it is not set)
 
 /* ---- normal users (name + company email) ---- */
@@ -109,10 +115,12 @@ app.onError((err, c) => {
 app.get("*", async (c): Promise<Response> => (c.req.path.startsWith("/api/") ? c.json({ error: "not found" }, 404) : serveWeb(c)));
 
 await ensureAdmin();
+await applyStoredSettings(); // address and email settings saved under Admin > System override .env
 await seedKb();
 await seedKbPack();
 await seedReplies();
 await seedChecklists();
+await checkForUpdate();
 const prune = () => { pruneNotifications(); pruneAudit(config.auditRetentionDays); void pruneDrafts().catch(() => {}); };
 prune();
 const pruneTimer = setInterval(prune, 6 * 3600_000);
@@ -121,21 +129,28 @@ const stopNotifier = startNotifier();
 const stopSla = startSla();
 const stopRecurring = startRecurring();
 const stopInbound = startInbound();
+const stopBackups = startBackups();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
-  console.log(`[server] Fortress Oil & Gas Helpdesk listening on http://localhost:${info.port}  (data: ${config.dataDir})`);
+  console.log(`[server] Fortress Oil & Gas Helpdesk listening on http://localhost:${info.port}  (version ${BUILD.id}, data: ${config.dataDir})`);
   if (!config.companyDomain) console.warn("[server] COMPANY_EMAIL_DOMAIN is not set: normal users can use any email domain.");
 });
 
 function shutdown(signal: string) {
   console.log(`[server] ${signal} received, shutting down`);
+  announceRestart(); // open screens say "being updated" and wait for the new version
   stopNotifier();
   stopSla();
   stopRecurring();
   stopInbound();
-  server.close(() => {
-    db.close();
-    process.exit(0);
-  });
+  stopBackups();
+  // A moment for the notice to reach the browsers, then close (the live streams would otherwise hold the server open).
+  setTimeout(() => {
+    server.close(() => {
+      db.close();
+      process.exit(0);
+    });
+    (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+  }, 500);
   setTimeout(() => process.exit(0), 5000).unref();
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));

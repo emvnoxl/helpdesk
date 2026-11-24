@@ -179,7 +179,7 @@ export function Home({ name, go, open, onNew }: { name: string; go: (page: Go) =
           <Shortcut i={1} onClick={() => go("help")} title="Help articles" sub="Quick fixes and videos for the usual problems" tint="var(--color-brand-green)"
             d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01" />
           <Shortcut i={2} onClick={() => go("board")} title="Live board" sub="What IT is working on and who is next" tint="var(--color-brand-amber)" d="M3 12h4l3-8 4 16 3-8h4" />
-          <Shortcut i={3} onClick={() => go("account")} title="Your account" sub="Your PIN and this computer's details" tint="var(--color-brand-red)"
+          <Shortcut i={3} onClick={() => go("account")} title="Your account" sub="Your sign-in and this computer's details" tint="var(--color-brand-red)"
             d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4 21a8 8 0 0 1 16 0" />
           <Shortcut i={4} onClick={() => setTour(true)} title="Take the tour" sub="One minute: how the helpdesk works" tint="var(--color-stone-400)" d="M8 5v14l11-7z" />
         </ul>

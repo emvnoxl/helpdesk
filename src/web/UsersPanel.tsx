@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ApiError, api, fmt } from "./api";
 import { useNotify } from "./notify";
+import { useSso } from "./sso";
 import { btn, btnGhost, card, field } from "./ui";
 
 type StaffRow = {
@@ -24,6 +25,7 @@ function SecretBox({ pw }: { pw: string }) {
 
 /** Admin only: create agents, reset their passwords, disable or delete them. */
 export function UsersPanel({ meId, onExpired }: { meId: number; onExpired: () => void }) {
+  const sso = useSso();
   const { toast, confirm } = useNotify();
   const [rows, setRows] = useState<StaffRow[] | null>(null);
   const [loadErr, setLoadErr] = useState("");
@@ -164,7 +166,7 @@ export function UsersPanel({ meId, onExpired }: { meId: number; onExpired: () =>
 
       <form onSubmit={create} className={card + " h-fit space-y-3"}>
         <h2 className="font-bold">Add someone to the IT team</h2>
-        <p className="text-xs text-neutral-500">They sign in at <span className="font-mono">/agent</span> (agents) or <span className="font-mono">/admin</span> (admins) with a temporary password you give them.</p>
+        <p className="text-xs text-neutral-500">They sign in at <span className="font-mono">/agent</span> (agents) or <span className="font-mono">/admin</span> (admins) {sso?.available ? "with their Microsoft 365 account as soon as you have added them here. The temporary password is only needed if Microsoft sign-in is switched off." : "with a temporary password you give them."}</p>
         <label className="block text-sm font-semibold">Name<input className={field + " mt-1 font-normal"} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={100} required /></label>
         <label className="block text-sm font-semibold">Email<input className={field + " mt-1 font-normal"} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label>
         <label className="block text-sm font-semibold">Role

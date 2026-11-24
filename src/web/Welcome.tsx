@@ -6,6 +6,8 @@ import { PIN_LENGTH, PinInput } from "./PinInput";
 import { usePageTone } from "./tone";
 import { ThemeToggle } from "./ThemeToggle";
 import { btn, field } from "./ui";
+import { loginError } from "./deeplink";
+import { OrDivider, SsoButton, ssoErrorText, useSso } from "./sso";
 
 const initials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "?";
 
@@ -16,6 +18,8 @@ type Step = "details" | "pin" | "create";
     After signing out, a computer that has been used offers "Continue as <name>" (it still asks for the PIN). */
 export function Welcome({ onDone }: { onDone: (created: boolean) => void }) {
   usePageTone("dark");
+  const sso = useSso();
+  const legacy = sso !== null && !sso.enforced; // names and PINs: until Microsoft sign-in is switched on for everyone
   const saved = loadSaved();
   const known = !!(saved.name && saved.email);
   const [other, setOther] = useState(false); // "Not you?" opens the form for someone else
@@ -84,7 +88,20 @@ export function Welcome({ onDone }: { onDone: (created: boolean) => void }) {
         <div className="page-in w-full max-w-md space-y-6 rounded-3xl bg-surface p-6 shadow-2xl sm:p-8" key={step + String(other)}>
           <Logo className="h-16" />
 
-          {step === "pin" && (
+          {loginError && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{ssoErrorText(loginError)}</p>}
+
+          {sso?.enforced && (
+            <div className="space-y-5">
+              <div>
+                <h1 className="text-2xl font-extrabold">Sign in</h1>
+                <p className="mt-1 text-sm text-neutral-500">Use your company Microsoft 365 account, the same one you use for email.</p>
+              </div>
+              <SsoButton portal="user" />
+              <p className="text-xs text-neutral-500">First time here? Signing in creates your helpdesk account from your Microsoft profile. There is no PIN and nothing else to remember.</p>
+            </div>
+          )}
+
+          {legacy && step === "pin" && (
             <div className="space-y-5">
               <div className="flex items-start gap-4">
                 {lock}
@@ -100,7 +117,7 @@ export function Welcome({ onDone }: { onDone: (created: boolean) => void }) {
             </div>
           )}
 
-          {step === "create" && (
+          {legacy && step === "create" && (
             <form className="space-y-5" onSubmit={submitCreate} noValidate>
               <div className="flex items-start gap-4">
                 {lock}
@@ -121,7 +138,7 @@ export function Welcome({ onDone }: { onDone: (created: boolean) => void }) {
             </form>
           )}
 
-          {step === "details" && known && !other && (
+          {legacy && step === "details" && known && !other && (
             <div className="space-y-5">
               <div>
                 <h1 className="text-2xl font-extrabold">Welcome back</h1>
@@ -148,8 +165,14 @@ export function Welcome({ onDone }: { onDone: (created: boolean) => void }) {
             </div>
           )}
 
-          {step === "details" && !(known && !other) && (
+          {legacy && step === "details" && !(known && !other) && (
             <form className="space-y-5" onSubmit={submitDetails} noValidate>
+              {sso?.available && (
+                <div className="space-y-4">
+                  <SsoButton portal="user" />
+                  <OrDivider text="or use your name and a PIN" />
+                </div>
+              )}
               <div>
                 <h1 className="text-2xl font-extrabold">Sign in</h1>
                 <p className="mt-1 text-sm text-neutral-500">Tell us who you are so IT knows who we're helping and where to send updates. First time here? You'll create a PIN next.</p>
