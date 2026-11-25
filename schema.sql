@@ -34,7 +34,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ms_oid ON users(ms_oid) WHERE ms_oid
 
 CREATE TABLE IF NOT EXISTS categories (
   id    INTEGER PRIMARY KEY AUTOINCREMENT,
-  name  TEXT NOT NULL UNIQUE                   -- Network, Hardware, M365, Access/Accounts, Printing, AV, CCTV, Other
+  name  TEXT NOT NULL UNIQUE,                  -- Network, Hardware, M365, Access/Accounts, Printing, AV, CCTV, Other
+  form  TEXT                                   -- JSON [{id, label, type, required, options?}]: the questions asked for this category
 );
 
 CREATE TABLE IF NOT EXISTS tickets (
@@ -65,7 +66,9 @@ CREATE TABLE IF NOT EXISTS tickets (
   rating        INTEGER,                       -- requester feedback: 1 fixed, -1 not fixed
   rating_comment TEXT,
   rated_at      INTEGER,
-  source        TEXT NOT NULL DEFAULT 'web'    -- web | email | checklist | recurring
+  source        TEXT NOT NULL DEFAULT 'web',   -- web | email | checklist | recurring
+  duplicate_of  INTEGER,                       -- the main ticket this one is the same problem as
+  answers       TEXT                           -- JSON [{label, value}]: the category form's answers
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -74,7 +77,11 @@ CREATE TABLE IF NOT EXISTS comments (
   author_id   INTEGER NOT NULL REFERENCES users(id),
   body        TEXT NOT NULL,
   internal    INTEGER NOT NULL DEFAULT 0,      -- 1 = agent-only note, hidden from the requester
-  created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  edited_at   INTEGER,
+  deleted_at  INTEGER,
+  kind        TEXT NOT NULL DEFAULT 'text',    -- 'text' | 'gif' (a library GIF, as an attachment) | 'giphy' (gif_ref = the GIPHY id)
+  gif_ref     TEXT
 );
 
 -- Audit trail: status/priority/assignee changes. Powers "requester gets status updates".
@@ -263,3 +270,31 @@ CREATE TABLE IF NOT EXISTS recurring_tickets (
   created_at     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_tickets(next_at) WHERE active = 1;
+
+-- Chat extras (migration 011)
+CREATE TABLE IF NOT EXISTS comment_reactions (
+  comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  emoji      TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (comment_id, user_id, emoji)
+);
+
+-- The newest message each person has had on screen, per ticket (read receipts).
+CREATE TABLE IF NOT EXISTS ticket_reads (
+  ticket_id       INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_comment_id INTEGER NOT NULL DEFAULT 0,
+  seen_at         INTEGER NOT NULL,
+  PRIMARY KEY (ticket_id, user_id)
+);
+
+-- GIFs the company chose, shared by everyone in the picker (the files sit in the uploads folder).
+CREATE TABLE IF NOT EXISTS gif_library (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  stored     TEXT NOT NULL UNIQUE,
+  size       INTEGER NOT NULL,
+  created_by INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);

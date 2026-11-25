@@ -3,6 +3,7 @@ import { changed as liveChanged } from "./bus";
 import { db } from "./db";
 import { notifyUser } from "./notifications";
 import { type WorkCalendar, DEFAULT_CALENDAR, addWorkSeconds, cleanCalendar, workSecondsBetween } from "./worktime";
+import { teamsNotify } from "./teams";
 
 /* Response targets ("SLA"): how many hours each priority gets. The numbers live in the settings table so an admin can change them
    (Library > Response targets); these are the starting values.
@@ -125,6 +126,7 @@ export async function checkSla() {
         .all<{ id: number }>()
     ).results;
     await db.batch([db.prepare("UPDATE tickets SET sla_alert = ? WHERE id = ?").bind(level, t.id), ...who.map((u) => notifyUser(u.id, t.id, kind, title, body, now))]);
+    if (late) teamsNotify("sla_breach", { ticketId: t.id, title: `${t.ref} is past its response target`, text: `${t.title} (${t.priority} priority)` });
     if (late) await audit(null, "ticket.sla_breach", "ticket", `${t.ref} went past its response target (${t.priority})`, { ticketId: t.id, who: SYSTEM });
     liveChanged(t.id);
   }

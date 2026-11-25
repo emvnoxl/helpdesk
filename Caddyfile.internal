@@ -1,0 +1,10 @@
+# HTTPS for an OFFICE-ONLY helpdesk (a NAS or server that is not reachable from the internet). Used instead of Caddyfile by setting
+# CADDYFILE=Caddyfile.internal in .env, then: docker compose --profile https up -d
+# Caddy cannot get a public certificate for a name the internet cannot reach, so it makes its own ("tls internal"). Every PC must then
+# trust Caddy's root certificate once (README, "HTTPS inside the office"); after that the padlock is green and calls/screen sharing work.
+{$APP_DOMAIN} {
+	tls internal
+	reverse_proxy helpdesk:3000 {
+		flush_interval -1
+	}
+}

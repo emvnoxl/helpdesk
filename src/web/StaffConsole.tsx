@@ -8,6 +8,7 @@ import { PeoplePanel } from "./PeoplePanel";
 import { Assets } from "./Assets";
 import { SystemPanel } from "./SystemPanel";
 import { UsersPanel } from "./UsersPanel";
+import { AnnounceButton } from "./AnnounceButton";
 import { useUpdateInfo } from "./UpdatesCard";
 import { CountUp } from "./motion";
 import { useNotify } from "./notify";
@@ -114,7 +115,10 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
 
       <div className="flex flex-wrap items-center gap-3">
         <SlidingTabs<Tab> variant="pill" label="Sections" value={tab} onChange={setTab} tabs={tabs} />
-        <button className="ml-auto text-sm font-semibold text-neutral-500 hover:text-fg" onClick={() => void load()}>Refresh</button>
+        <span className="ml-auto flex items-center gap-3">
+          <AnnounceButton />
+          <button className="text-sm font-semibold text-neutral-500 hover:text-fg" onClick={() => void load()}>Refresh</button>
+        </span>
       </div>
 
       {err && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>}

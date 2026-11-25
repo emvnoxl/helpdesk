@@ -7,7 +7,7 @@ import { config } from "./config";
    prepare().bind().first()/all()/run() and batch() shape the queries were written in, so the SQL reads the same. */
 
 /** Bump when you add a file to migrations/. A fresh database is created from schema.sql at this version. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 13;
 
 type Param = string | number | bigint | null | Uint8Array;
 const norm = (v: unknown): Param => (v === undefined || v === null ? null : typeof v === "boolean" ? (v ? 1 : 0) : (v as Param));

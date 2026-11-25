@@ -18,6 +18,7 @@ import { db } from "./db";
      - a file on an internal note is hidden from the requester, a draft is visible only to whoever uploaded it. */
 
 const DIR = path.join(config.dataDir, "uploads");
+export const UPLOAD_DIR = DIR;
 mkdirSync(DIR, { recursive: true });
 
 const MAX_BYTES = config.maxUploadMb * 1024 * 1024;

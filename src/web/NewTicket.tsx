@@ -7,7 +7,8 @@ import { Suggest } from "./Help";
 import { useNotify } from "./notify";
 import { btn, btnGhost, card, field } from "./ui";
 
-type Category = { id: number; name: string };
+export interface FormField { id: string; label: string; type: "text" | "longtext" | "select" | "yesno"; required: boolean; options?: string[] }
+type Category = { id: number; name: string; fields?: FormField[] };
 type Draft = { title: string; description: string; category_id: string; asset_tag: string };
 const EMPTY: Draft = { title: "", description: "", category_id: "", asset_tag: "" };
 const DRAFT_KEY = "fortress-helpdesk:draft";
@@ -90,6 +91,7 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
   const [err, setErr] = useState("");
   const [sent, setSent] = useState<{ id: number; ref: string; title: string; failed: string[] } | null>(null);
   const [files, setFiles] = useState<Chosen[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({}); // the category's questions
   const { toast } = useNotify();
   const LIMIT_MB = useUploadLimit();
 
@@ -124,10 +126,13 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
       return next;
     });
 
+  const fields = cats?.find((c) => String(c.id) === f.category_id)?.fields ?? [];
+  const answered = (fl: FormField) => !!(answers[fl.id] ?? "").trim();
+  const answersOk = fields.every((fl) => !fl.required || answered(fl));
   const titleOk = f.title.trim().length >= 5;
   const descOk = f.description.trim().length >= 15;
-  const valid = !!f.category_id && titleOk && descOk;
-  const missing = [!f.category_id && "a category", !titleOk && "a short summary", !descOk && "a few details"].filter(Boolean) as string[];
+  const valid = !!f.category_id && titleOk && descOk && answersOk;
+  const missing = [!f.category_id && "a category", !titleOk && "a short summary", !descOk && "a few details", !answersOk && "the quick questions"].filter(Boolean) as string[];
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -137,7 +142,7 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
     try {
       const r = await api<{ id: number; ref: string }>("/tickets", {
         method: "POST",
-        json: { ...f, category_id: Number(f.category_id), device_key: deviceKey() },
+        json: { ...f, category_id: Number(f.category_id), device_key: deviceKey(), answers },
       });
       saveDraft(EMPTY);
       // The files go up once the ticket exists. If one is refused the ticket is still raised, and we say which.
@@ -177,7 +182,7 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
         )}
         <div className="flex flex-wrap justify-center gap-2 pt-2">
           <button className={btn} onClick={() => onView(sent.id)}>View ticket</button>
-          <button className={btnGhost + " border border-stone-300"} onClick={() => { setSent(null); setF(EMPTY); setShowMore(false); clearFiles(); }}>Submit another</button>
+          <button className={btnGhost + " border border-stone-300"} onClick={() => { setSent(null); setF(EMPTY); setAnswers({}); setShowMore(false); clearFiles(); }}>Submit another</button>
           <button className={btnGhost} onClick={onList}>My tickets</button>
         </div>
       </div>
@@ -207,7 +212,7 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
                     type="button"
                     role="radio"
                     aria-checked={on}
-                    onClick={() => update({ category_id: String(c.id) })}
+                    onClick={() => { if (String(c.id) !== f.category_id) setAnswers({}); update({ category_id: String(c.id) }); }}
                     className={`flex items-center gap-3 rounded-xl border px-3 py-3 text-left text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-green ${
                       on ? "border-brand-green bg-brand-green/10 shadow-[0_0_0_1px_var(--color-brand-green)]" : "border-stone-200 bg-surface hover:border-stone-400"
                     }`}
@@ -221,7 +226,35 @@ export function NewTicket({ name, email, onView, onList, initialTitle = "" }: { 
           )}
         </Step>
 
-        <Step n={2} title="Tell us what's wrong">
+        {fields.length > 0 && (
+          <Step n={2} title="A few quick questions" hint="So IT can fix it faster">
+            {fields.map((fl) => (
+              <div key={fl.id}>
+                <div className="mb-1 flex justify-between text-sm">
+                  <label htmlFor={"q-" + fl.id} className="font-semibold">{fl.label}</label>
+                  {!fl.required && <span className="text-xs text-neutral-400">optional</span>}
+                </div>
+                {fl.type === "longtext" ? (
+                  <textarea id={"q-" + fl.id} className={field + " min-h-24"} rows={3} maxLength={2000} value={answers[fl.id] ?? ""} onChange={(e) => setAnswers({ ...answers, [fl.id]: e.target.value })} />
+                ) : fl.type === "select" || fl.type === "yesno" ? (
+                  <div role="radiogroup" aria-label={fl.label} className="flex flex-wrap gap-2">
+                    {(fl.type === "yesno" ? ["Yes", "No"] : fl.options ?? []).map((o) => {
+                      const on = answers[fl.id] === o;
+                      return (
+                        <button key={o} type="button" role="radio" aria-checked={on} onClick={() => setAnswers({ ...answers, [fl.id]: on && !fl.required ? "" : o })}
+                          className={`rounded-full border px-3.5 py-1.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-green ${on ? "border-brand-green bg-brand-green/15" : "border-stone-300 hover:border-stone-500"}`}>{o}</button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <input id={"q-" + fl.id} className={field} maxLength={200} value={answers[fl.id] ?? ""} onChange={(e) => setAnswers({ ...answers, [fl.id]: e.target.value })} />
+                )}
+              </div>
+            ))}
+          </Step>
+        )}
+
+        <Step n={fields.length ? 3 : 2} title="Tell us what's wrong">
           <div>
             <div className="mb-1 flex justify-between text-sm">
               <label htmlFor="t-title" className="font-semibold">Summary</label>

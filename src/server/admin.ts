@@ -12,6 +12,10 @@ import { saveCalendar, saveSlaHours, slaHours, workCalendar } from "./sla";
 import { recurring } from "./recurring";
 import { dashboard } from "./dashboard";
 import { system } from "./system";
+import { gifAdmin } from "./gifs";
+import { teams } from "./teams";
+import { automation } from "./automation";
+import { forms } from "./forms";
 import { backups } from "./backup";
 import { hashPassword, randomPassword } from "./security";
 import { unlink } from "node:fs/promises";
@@ -33,6 +37,10 @@ const FORMER_USER = "former.user@helpdesk.invalid";
 // The full IT live board (office display and admin portal only).
 admin.route("/board", dashboard);
 admin.route("/activity", activity);
+admin.route("/forms", forms); // the questions asked per category
+admin.route("/automation", automation); // housekeeping rules (auto-close)
+admin.route("/teams", teams); // alerts in a Teams channel
+admin.route("/gifs", gifAdmin); // the GIPHY key and the company GIF library
 admin.route("/reports", reports);
 admin.route("/recurring", recurring);
 admin.route("/system", system);

@@ -27,6 +27,11 @@ import { inbound, startInbound } from "./inbound";
 import { serveWeb } from "./static";
 import { announceRestart, checkForUpdate } from "./system";
 import { startBackups } from "./backup";
+import { gifs, giphyOn, loadGiphyState } from "./gifs";
+import { announce, loadAnnouncement } from "./announce";
+import { loadTeams } from "./teams";
+import { loadAutomation, startAutomation } from "./automation";
+import { seedForms } from "./forms";
 import { startUpdateChecks } from "./updates";
 import { applyStoredSettings } from "./settings";
 import { sso } from "./sso";
@@ -42,21 +47,28 @@ if (process.argv[2] === "reset-admin") {
 const app = new Hono<AppEnv>();
 
 app.use("*", compress());
-const secure = secureHeaders({
+// Two policies: GIPHY's addresses are allowed (for its web SDK in the chat) only while an admin has GIPHY switched on.
+const csp = (giphy: boolean) =>
+  secureHeaders({
     contentSecurityPolicy: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       frameSrc: ["https://www.youtube-nocookie.com"], // help-article videos (privacy-enhanced YouTube embeds) and nothing else
-      imgSrc: ["'self'", "data:", "blob:"], // blob: = the thumbnail of a file chosen for upload, before it is sent
-      connectSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "blob:", ...(giphy ? ["https://*.giphy.com"] : [])], // blob: = the thumbnail of a file chosen for upload, before it is sent
+      mediaSrc: ["'self'", ...(giphy ? ["https://*.giphy.com"] : [])],
+      connectSrc: ["'self'", ...(giphy ? ["https://api.giphy.com", "https://pingback.giphy.com"] : [])],
       frameAncestors: ["'none'"],
       baseUri: ["'self'"],
       formAction: ["'self'"],
     },
     referrerPolicy: "same-origin",
-});
+  });
+const secureNoGiphy = csp(false);
+const secureGiphy = csp(true);
+const staffPage = (path: string) => /^\/(admin|agent)(\/|$)/.test(path);
+const secure: typeof secureNoGiphy = (c, next) => (giphyOn() || staffPage(c.req.path) ? secureGiphy(c, next) : secureNoGiphy(c, next));
 // Uploaded files carry their own, stricter policy (default-src 'none'; sandbox), which the site-wide one would overwrite.
 app.use("*", (c, next) => (/\/attachments\/\d+$/.test(c.req.path) ? next() : secure(c, next)));
 // Request log: only changes and problems, so polling doesn't flood `docker logs`.
@@ -83,6 +95,8 @@ app.route("/api/tickets", tickets);
 app.use("/api/stream", requesterAuth);
 app.route("/api/stream", stream);
 app.route("/api/devices", devices); // each route sets its own auth: the hardware script has no cookie, only a signed token
+app.use("/api/gifs/*", requesterAuth);
+app.route("/api/gifs", gifs); // the GIF picker for normal users
 app.use("/api/kb/*", requesterAuth);
 app.route("/api/kb", kb); // help articles for normal users (published only)
 app.use("/api/notifications/*", requesterAuth);
@@ -101,6 +115,10 @@ app.use("/api/staff/kb/*", staffAuth());
 app.route("/api/staff/kb", kb); // the same articles for staff, with write access
 app.use("/api/staff/replies/*", staffAuth());
 app.route("/api/staff/replies", replies);
+app.use("/api/staff/announcement", staffAuth());
+app.route("/api/staff/announcement", announce); // the outage banner
+app.use("/api/staff/gifs/*", staffAuth());
+app.route("/api/staff/gifs", gifs); // the GIF picker for staff
 app.use("/api/staff/checklists/*", staffAuth());
 app.route("/api/staff/checklists", checklists);
 app.use("/api/staff/notifications/*", staffAuth());
@@ -122,6 +140,11 @@ await seedKbPack();
 await seedReplies();
 await seedChecklists();
 await checkForUpdate();
+await loadGiphyState();
+await loadAnnouncement();
+await loadTeams();
+await loadAutomation();
+await seedForms();
 const prune = () => { pruneNotifications(); pruneAudit(config.auditRetentionDays); void pruneDrafts().catch(() => {}); };
 prune();
 const pruneTimer = setInterval(prune, 6 * 3600_000);
@@ -132,6 +155,7 @@ const stopRecurring = startRecurring();
 const stopInbound = startInbound();
 const stopBackups = startBackups();
 const stopUpdateChecks = startUpdateChecks();
+const stopAutomation = startAutomation();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
   console.log(`[server] Fortress Oil & Gas Helpdesk listening on http://localhost:${info.port}  (version ${BUILD.id}, data: ${config.dataDir})`);
   if (!config.companyDomain) console.warn("[server] COMPANY_EMAIL_DOMAIN is not set: normal users can use any email domain.");
@@ -146,6 +170,7 @@ function shutdown(signal: string) {
   stopInbound();
   stopBackups();
   stopUpdateChecks();
+  stopAutomation();
   // A moment for the notice to reach the browsers, then close (the live streams would otherwise hold the server open).
   setTimeout(() => {
     server.close(() => {

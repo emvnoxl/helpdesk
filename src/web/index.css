@@ -267,6 +267,9 @@ html.theme-fade *::after {
    in dark mode the override above already gives ~5:1. */
 html.theme-light { --color-neutral-400: #757575; }
 
+@keyframes media-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.media-rise { animation: media-rise 180ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) { .media-rise { animation: none; } }
 @keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .msg-in { animation: msg-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both; }
 @media (prefers-reduced-motion: reduce) { .msg-in { animation: none; } }

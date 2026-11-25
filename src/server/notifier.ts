@@ -6,7 +6,9 @@ import { db } from "./db";
    Transport, in order of preference: MAIL_LOG_ONLY=1 (print to the log), Microsoft Graph (if configured), SMTP (if configured).
 
    Two streams:
-   - REQUESTERS are emailed from ticket_events (status, assignee, a staff reply, "we have your ticket"), straight away.
+   - REQUESTERS are emailed from ticket_events. "We have your ticket" goes at once. A staff reply, a status change or a new assignee is
+     emailed only if the person has NOT looked at it in the helpdesk after REQUESTER_EMAIL_DELAY_SECONDS (300): opening the ticket or
+     the bell marks it read, which cancels the email. Several unseen updates on one ticket become ONE email (the latest messages only).
    - IT STAFF are emailed from their bell notifications (new ticket, assigned to you, a requester wrote, a late ticket, a call request,
      an internal note) but only if they are still unread after STAFF_EMAIL_DELAY_SECONDS (so nothing is emailed while they are at the
      helpdesk), and several arriving together become ONE email.
@@ -87,7 +89,7 @@ export function composeRequester(e: Pending): Mail {
   const blocks: Block[] = [para(`Hi ${first},`)];
   let button_label = "Open my ticket";
   if (e.field === "reply") {
-    blocks.push(para({ b: e.actor ?? "IT" }, " from IT replied:"), quote(e.reply ?? ""), para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
+    blocks.push(para({ b: e.actor ?? "IT" }, " from IT replied:"), quote(e.reply || "Sent an attachment."), para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
     button_label = "Open the conversation";
   } else if (e.field === "created") {
     blocks.push(e.source === "email"
@@ -126,6 +128,27 @@ export function composeWelcome(u: { name: string; email: string }): Mail {
   blocks.push(para("Kind regards,"), para({ b: "IT Support" }, ", Fortress Oil & Gas"));
   const { html, text } = shell(blocks, "You are receiving this one-time message because an account was created for you on the helpdesk. You can switch off ticket emails under Your account.");
   return { to: u.email, subject: "Welcome to the Fortress Oil & Gas Helpdesk", html, text };
+}
+
+/** Several unseen updates on one ticket in one email: what changed, and only the latest few messages (never the whole conversation). */
+export function composeRequesterGroup(events: Pending[]): Mail {
+  if (events.length === 1) return composeRequester(events[0]!);
+  const e0 = events[0]!;
+  const first = e0.to_name.split(" ")[0] || "there";
+  const blocks: Block[] = [para(`Hi ${first},`), para("There are updates on your ticket that you have not seen yet:")];
+  const lastStatus = [...events].reverse().find((e) => e.field === "status");
+  const lastAssign = [...events].reverse().find((e) => e.field === "assignee" && e.new_assignee);
+  if (lastStatus) blocks.push(para("The status is now ", { b: LABEL[lastStatus.new_value ?? ""] ?? lastStatus.new_value ?? "updated" }, "."));
+  if (lastAssign) blocks.push(para({ b: lastAssign.new_assignee! }, " is now working on your ticket."));
+  const replies = events.filter((e) => e.field === "reply");
+  for (const r of replies.slice(-3)) blocks.push(para({ b: r.actor ?? "IT" }, " from IT replied:"), quote((r.reply || "Sent an attachment.").length > 500 ? (r.reply || "").slice(0, 500).trimEnd() + "…" : r.reply || "Sent an attachment."));
+  if (replies.length > 3) blocks.push(para(`…and ${replies.length - 3} earlier message${replies.length - 3 === 1 ? "" : "s"} in the conversation.`));
+  if (replies.length) blocks.push(para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
+  blocks.push(ticketLine(e0.ref, e0.title));
+  const url = ticketUrl("requester", e0.ticket_id);
+  if (url) blocks.push(button(replies.length ? "Open the conversation" : "Open my ticket", url));
+  const { html, text } = shell(blocks, "You get this email because you have not opened the ticket in the helpdesk yet. You can switch these emails off under Your account.");
+  return { to: e0.to_email, subject: `[${e0.ref}] ${e0.title}`, html, text };
 }
 
 /** One email per person per round: a single update reads like the bell, several become a short list. */
@@ -256,24 +279,47 @@ export async function sendTest(to: string): Promise<string> {
 let warned = false;
 let busy = false;
 
+const PENDING_SELECT = `SELECT e.id, t.id AS ticket_id, e.field, e.new_value, t.ref, t.title, t.source, u.email AS to_email, u.name AS to_name,
+              CASE WHEN e.field = 'assignee' THEN (SELECT name FROM users WHERE id = CAST(e.new_value AS INTEGER)) END AS new_assignee,
+              (SELECT name FROM users WHERE id = e.actor_id) AS actor,
+              CASE WHEN e.field = 'reply' THEN (SELECT CASE WHEN kind IN ('gif','giphy') AND body = '' THEN 'Sent a GIF.' ELSE body END FROM comments WHERE id = CAST(e.new_value AS INTEGER) AND internal = 0 AND deleted_at IS NULL) END AS reply
+       FROM ticket_events e JOIN tickets t ON t.id = e.ticket_id JOIN users u ON u.id = t.requester_id`;
+
 async function sendRequesterEvents(sender: { name: string; send: Sender }): Promise<number> {
   // People who switched emails off: mark their events done without sending.
   await db.prepare("UPDATE ticket_events SET notified = 1 WHERE notified = 0 AND ticket_id IN (SELECT t.id FROM tickets t JOIN users u ON u.id = t.requester_id WHERE u.email_notify = 0 OR u.active = 0)").run();
-  const { results } = await db
-    .prepare(
-      `SELECT e.id, t.id AS ticket_id, e.field, e.new_value, t.ref, t.title, t.source, u.email AS to_email, u.name AS to_name,
-              CASE WHEN e.field = 'assignee' THEN (SELECT name FROM users WHERE id = CAST(e.new_value AS INTEGER)) END AS new_assignee,
-              (SELECT name FROM users WHERE id = e.actor_id) AS actor,
-              CASE WHEN e.field = 'reply' THEN (SELECT body FROM comments WHERE id = CAST(e.new_value AS INTEGER) AND internal = 0) END AS reply
-       FROM ticket_events e JOIN tickets t ON t.id = e.ticket_id JOIN users u ON u.id = t.requester_id
-       WHERE e.notified = 0 AND (e.field IN ('status','assignee','reply') OR (e.field = 'created' AND t.source IN ('email','web')))
-       ORDER BY e.created_at ASC LIMIT 25`,
-    )
-    .all<Pending>();
   let sent = 0;
-  for (const e of results) {
+
+  // 1. "We have your ticket": at once.
+  const created = await db
+    .prepare(`${PENDING_SELECT} WHERE e.notified = 0 AND e.field = 'created' AND t.source IN ('email','web') ORDER BY e.created_at ASC LIMIT 25`)
+    .all<Pending>();
+  for (const e of created.results) {
     await deliver(sender, composeRequester(e));
     await db.prepare("UPDATE ticket_events SET notified = 1 WHERE id = ?").bind(e.id).run();
+    sent++;
+  }
+
+  // 2. Replies, status changes, a new assignee: only when the person has NOT looked at them. The bell notification written with the event is
+  //    marked read the moment they open the ticket (or the bell), so "no unread notification at or after this event" means they have seen it.
+  const delay = config.mail.requesterDelaySeconds;
+  await db
+    .prepare(
+      `UPDATE ticket_events SET notified = 1 WHERE notified = 0 AND field IN ('status','assignee','reply') AND created_at <= unixepoch() - ?
+         AND NOT EXISTS (SELECT 1 FROM notifications n JOIN tickets t ON t.id = ticket_events.ticket_id
+                         WHERE n.ticket_id = t.id AND n.user_id = t.requester_id AND n.read_at IS NULL AND n.created_at >= ticket_events.created_at)`,
+    )
+    .bind(delay)
+    .run();
+  const updates = await db
+    .prepare(`${PENDING_SELECT} WHERE e.notified = 0 AND e.field IN ('status','assignee','reply') AND e.created_at <= unixepoch() - ? ORDER BY e.created_at ASC LIMIT 100`)
+    .bind(delay)
+    .all<Pending>();
+  const byTicket = new Map<number, Pending[]>();
+  for (const e of updates.results) byTicket.set(e.ticket_id, [...(byTicket.get(e.ticket_id) ?? []), e]);
+  for (const group of byTicket.values()) {
+    await deliver(sender, composeRequesterGroup(group));
+    await db.prepare(`UPDATE ticket_events SET notified = 1 WHERE id IN (${group.map(() => "?").join(",")})`).bind(...group.map((e) => e.id)).run();
     sent++;
   }
   return sent;

@@ -6,8 +6,9 @@ import { applySystem } from "./system";
    ONE stream per path no matter how many components listen. A slow poll stays in each screen as a safety net (a proxy that buffers
    streams, a laptop waking from sleep): the screens still work, just not instantly. */
 
-export type LiveEvent = "change" | "audit" | "open" | "call";
-type Handler = (event: LiveEvent, data: { ticket?: number }) => void;
+export type LiveEvent = "change" | "audit" | "open" | "call" | "typing";
+type LiveData = { ticket?: number; name?: string; staff?: boolean };
+type Handler = (event: LiveEvent, data: LiveData) => void;
 interface Hub { es: EventSource | null; handlers: Set<Handler>; timer: number; opened: boolean }
 const hubs = new Map<string, Hub>();
 
@@ -35,6 +36,7 @@ function connect(path: string, hub: Hub) {
   };
   es.addEventListener("change", fire("change"));
   es.addEventListener("audit", fire("audit"));
+  es.addEventListener("typing", fire("typing")); // someone is typing on a ticket (TicketView)
   es.addEventListener("call", fire("call")); // someone is ringing, answered or hung up (Calls.tsx)
   es.addEventListener("system", (e) => { try { applySystem(JSON.parse((e as MessageEvent).data || "{}")); } catch { /* ignore */ } }); // update announced / server restarting
   es.addEventListener("hello", (e) => {
@@ -77,14 +79,14 @@ export function subscribe(path: string, handler: Handler): () => void {
 
 /** Calls `onEvent` for every push on `path` ("/stream" for normal users, "/staff/stream" for agents and admins), with a short
     debounce so a burst of changes becomes one refresh. `events` limits which kinds wake you (default: change and reconnect). */
-export function useLive(path: string, onEvent: (event: LiveEvent, data: { ticket?: number }) => void, events: LiveEvent[] = ["change", "open"]) {
+export function useLive(path: string, onEvent: (event: LiveEvent, data: LiveData) => void, events: LiveEvent[] = ["change", "open"]) {
   const cb = useRef(onEvent);
   cb.current = onEvent;
   const want = useRef(events);
   want.current = events;
   useEffect(() => {
     let timer = 0;
-    let last: { event: LiveEvent; data: { ticket?: number } } | null = null;
+    let last: { event: LiveEvent; data: LiveData } | null = null;
     const off = subscribe(path, (event, data) => {
       if (!want.current.includes(event)) return;
       // A ticket-specific event must not be swallowed by a later generic one inside the debounce window.

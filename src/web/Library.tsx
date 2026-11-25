@@ -6,11 +6,12 @@ import { useNotify } from "./notify";
 import { SlidingTabs } from "./Tabs";
 import { btn, btnGhost, card, field } from "./ui";
 import { Checklists, Recurring, WorkingHours } from "./Workflows";
+import { RequestForms } from "./RequestForms";
 
 /* Staff > Library: the things that save IT typing. Help articles (what requesters read before and after raising a ticket),
    saved replies for the composer, and (admins) the response targets. */
 
-type Section = "articles" | "replies" | "checklists" | "recurring" | "targets";
+type Section = "articles" | "replies" | "checklists" | "recurring" | "forms" | "targets";
 
 export function Library({ admin, open, onExpired }: { admin: boolean; open: (id: number) => void; onExpired: () => void }) {
   const [s, setS] = useState<Section>("articles");
@@ -18,7 +19,7 @@ export function Library({ admin, open, onExpired }: { admin: boolean; open: (id:
     { id: "articles" as Section, label: "Help articles" },
     { id: "replies" as Section, label: "Saved replies" },
     { id: "checklists" as Section, label: "Checklists" },
-    ...(admin ? [{ id: "recurring" as Section, label: "Recurring" }, { id: "targets" as Section, label: "Response targets" }] : []),
+    ...(admin ? [{ id: "recurring" as Section, label: "Recurring" }, { id: "forms" as Section, label: "Request forms" }, { id: "targets" as Section, label: "Response targets" }] : []),
   ];
   return (
     <div className="space-y-4">
@@ -28,6 +29,7 @@ export function Library({ admin, open, onExpired }: { admin: boolean; open: (id:
         {s === "replies" && <Replies admin={admin} onExpired={onExpired} />}
         {s === "checklists" && <Checklists admin={admin} open={open} onExpired={onExpired} />}
         {s === "recurring" && admin && <Recurring open={open} onExpired={onExpired} />}
+        {s === "forms" && admin && <RequestForms onExpired={onExpired} />}
         {s === "targets" && admin && <Targets onExpired={onExpired} />}
       </div>
     </div>

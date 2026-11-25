@@ -23,7 +23,7 @@ const ok = (name, cond, extra = "") => { cond ? pass++ : fail++; console.log(con
 function start(extraEnv = {}) {
   const child = spawn(process.execPath, ["dist-server/index.js"], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", SSO_AUTHORITY: IDP, SSO_GRAPH_URL: IDP + "/graph", UPDATE_API_URL: IDP + "/gh", UPDATER_URL: IDP + "/updater", UPDATER_SECRET: "pretend-updater-secret-123", STAFF_EMAIL_DELAY_SECONDS: "0", ALT_URLS: "http://helpdesk.fortress.test/", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", SSO_AUTHORITY: IDP, SSO_GRAPH_URL: IDP + "/graph", UPDATE_API_URL: IDP + "/gh", UPDATER_URL: IDP + "/updater", GIPHY_API_URL: IDP + "/giphy", GIPHY_MEDIA_URL: IDP + "/giphy-media", UPDATER_SECRET: "pretend-updater-secret-123", STAFF_EMAIL_DELAY_SECONDS: "0", REQUESTER_EMAIL_DELAY_SECONDS: "0", TEAMS_ALLOW_ANY: "1", SEED_FORMS: "0", ALT_URLS: "http://helpdesk.fortress.test/", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (d) => (log += d));
@@ -64,6 +64,9 @@ import { createHash as sha256, randomBytes as rnd } from "node:crypto";
 const TENANT = "0a1b2c3d-0000-4000-8000-0000000000aa", CLIENT = "0a1b2c3d-0000-4000-8000-0000000000bb", CSECRET = "pretend~client.secret";
 /* next = who signs in at the pretend Microsoft; flags break one thing at a time. */
 const gh = { latest: "abc1234", seenAuth: null, calls: 0 };
+const GIF_BYTES = Buffer.from("47494638396101000100800000000000ffffff21f9040100000000002c00000000010001000002024401003b", "hex");
+const giphy = { key: "GiphyTestSdkKey123456789", hits: 0 };
+const teams = { posts: [], status: 200 };
 const updater = { secret: "pretend-updater-secret-123", started: [], state: "idle", down: false };
 const idp = { next: null, codes: new Map(), exchange: null, graphDown: false, badAud: false, badNonce: false, authorizeSeen: null };
 const idpServer = http.createServer(async (rq, rs) => {
@@ -97,6 +100,8 @@ const idpServer = http.createServer(async (rq, rs) => {
     const w = idp.tokenFor;
     return send(200, { displayName: w.name, mail: w.email, userPrincipalName: w.email, jobTitle: w.job ?? null, department: w.dept ?? null });
   }
+  if (u.pathname === "/teams/hook" && rq.method === "POST") { let body = ""; for await (const ch of rq) body += ch; try { teams.posts.push(JSON.parse(body)); } catch { teams.posts.push({ bad: body }); } return send(teams.status, {}); }
+  if (u.pathname.startsWith("/giphy")) { giphy.hits++; return send(500, {}); } // the helpdesk server must NEVER call GIPHY (GIPHY's rules: only browsers do)
   if (u.pathname.startsWith("/updater/")) { // pretend updater helper
     if (updater.down) { rq.socket.destroy(); return; }
     if (rq.headers.authorization !== "Bearer " + updater.secret) return send(401, { error: "unauthorised" });
@@ -1050,7 +1055,7 @@ const ST = "/api/staff/tickets";
   x = await mail({ from: ADMIN, subject: `RE: [${et.ref}] Projector`, text: "Close it", message_id: "<m5@x>" });
   ok("email never acts as IT: a staff address quoting someone's ticket only raises its own", x.json.outcome === "created" && dbq("select status from tickets where id = ?", et.id)[0].status === "in_progress");
   await new Promise((r) => setTimeout(r, 2600));
-  ok("a reply from IT is emailed to the requester", /\[mail\] to=kofi\.mensah@[^\n]*\n?[\s\S]{0,80}from IT replied:\s+> Is the power light on at the back\?/.test(log), log.split("\n").filter((l) => /kofi/.test(l)).slice(-3).join(" | "));
+  ok("a reply from IT is emailed to the requester", /\[mail\] to=kofi\.mensah@[^\n]*\n?[\s\S]{0,400}from IT replied:\s+> Is the power light on at the back\?/.test(log), log.split("\n").filter((l) => /kofi/.test(l)).slice(-3).join(" | "));
   ok("…and says they can answer by replying", /Reply to this email to answer/.test(log));
   ok("an internal note is never emailed", !/probably the lamp/.test(log));
   ok("the person who emailed gets a 'we have it' with the reference", new RegExp(`\\[mail\\] to=kofi\\.mensah@[^\\n]*subject="\\[${et.ref}\\][^\\n]*\\n?[\\s\\S]{0,80}raised a ticket`).test(log));
@@ -1275,10 +1280,12 @@ const ST = "/api/staff/tickets";
 
   // staff: one email for several things, nothing for what they have read, nothing when switched off
   const esi = dbq("select id from users where email = ?", "esi.agent@" + DOMAIN)[0].id;
+  const mark = log.length; // everything below is judged only on what is printed after this point
   dbx("insert into notifications (user_id, ticket_id, kind, title, body) values (?, null, 'new_ticket', 'DIGEST-ONE', 'first thing'), (?, null, 'assigned', 'DIGEST-TWO', 'second thing'), (?, null, 'message', 'DIGEST-THREE', 'third thing')", esi, esi, esi);
   dbx("insert into notifications (user_id, ticket_id, kind, title, body, read_at) values (?, null, 'new_ticket', 'ALREADY-READ-ONE', 'seen', unixepoch())", esi);
   ok("several waiting things become ONE email", await waitLog(/to=esi\.agent@[^ ]+ subject="3 updates waiting on the helpdesk" :: [^]*?DIGEST-ONE[^]*?DIGEST-TWO[^]*?DIGEST-THREE/));
-  ok("…and the same email is not sent twice", (log.match(/to=esi\.agent@[^ ]+ subject="3 updates waiting on the helpdesk"/g) ?? []).length === 1);
+  await new Promise((r) => setTimeout(r, 2600)); // a few more ticks: a second copy would have gone out by now
+  ok("…and the same email is not sent twice", log.slice(mark).split("[mail] to=").filter((m) => m.startsWith("esi.agent@") && m.includes("DIGEST-ONE")).length === 1);
   await quiet(2500);
   ok("a notification they already read is never emailed", !/ALREADY-READ-ONE/.test(log));
   ok("…and the rows are marked emailed", dbq("select count(*) n from notifications where user_id = ? and emailed = 0", esi)[0].n === 0);
@@ -1704,6 +1711,298 @@ const ST = "/api/staff/tickets";
   x = await req("GET", U, undefined, A);
   ok("updates: the token is never sent back, only that one is saved", x.json.has_token === true && !JSON.stringify(x.json).includes("ghp_pretend_token") && !dbq("select value from settings where key = 'update_source'")[0].value.includes("ghp_pretend_token"));
   ok("updates: the token is not in the activity log", !dbq("select group_concat(summary) s from audit_log")[0].s.includes("ghp_pretend_token"));
+}
+
+{ // Chat extras: formatting is client-side; here are read receipts, edit, delete, reactions, typing, GIFs
+  const rawGet = (s, p) => fetch(BASE + p, { headers: { cookie: s.cookie } });
+  const R1 = jar();
+  await req("POST", "/api/identify", { name: "Chat Person", email: "chat.person@" + DOMAIN, new_pin: "528394" }, R1);
+  const tk = (await req("POST", "/api/tickets", { title: "Chat test ticket", description: "for the chat checks", category_id: 5 }, R1)).json;
+  const rid = dbq("select id from users where email = ?", "chat.person@" + DOMAIN)[0].id;
+  const CT = "/api/tickets/" + tk.id, CS = ST + "/" + tk.id;
+  await req("POST", CT + "/comments", { body: "hello **world**" }, R1);
+  const m1 = dbq("select id from comments where ticket_id = ? order by id desc limit 1", tk.id)[0].id;
+
+  // ---- read receipts ----
+  let x = await req("GET", CT, undefined, R1);
+  ok("receipts: nobody from IT has looked yet", x.json.seen === null && x.json.now > 0 && x.json.edit_window === 900);
+  x = await req("GET", CS, undefined, GE);
+  ok("receipts: IT sees the requester has seen their own message", x.json.seen?.id === m1 && x.json.seen.by === "Chat Person", JSON.stringify(x.json.seen));
+  await req("POST", CS + "/comments", { body: "Hi, looking now", internal: false }, GE);
+  const m2 = dbq("select id from comments where ticket_id = ? order by id desc limit 1", tk.id)[0].id;
+  await req("GET", CS, undefined, GE); // IT opens the ticket again: the reply is on its screen
+  x = await req("GET", CT + "?peek=1", undefined, R1);
+  ok("receipts: the requester sees that IT has seen the conversation", x.json.seen?.id === m2 && /Agent|Esi|Kofi/.test(x.json.seen.by), JSON.stringify(x.json.seen));
+  ok("receipts: a hidden tab (peek=1) does not count as seen", dbq("select last_comment_id n from ticket_reads where ticket_id = ? and user_id = ?", tk.id, rid)[0].n === m1);
+  await req("GET", CT, undefined, R1);
+  ok("receipts: opening it for real does", dbq("select last_comment_id n from ticket_reads where ticket_id = ? and user_id = ?", tk.id, rid)[0].n === m2);
+  await req("POST", CS + "/comments", { body: "internal: needs a new battery", internal: true }, GE);
+  const note = dbq("select id from comments where ticket_id = ? and internal = 1 order by id desc limit 1", tk.id)[0].id;
+  await req("GET", CT, undefined, R1);
+  ok("receipts: an internal note never moves the requester's marker", dbq("select last_comment_id n from ticket_reads where ticket_id = ? and user_id = ?", tk.id, rid)[0].n === m2);
+
+  // ---- edit ----
+  x = await req("PATCH", CT + "/comments/" + m1, { body: "hello again" }, R1);
+  ok("edit: you can change your own message", x.code === 200 && x.json.changed === true);
+  x = await req("GET", CT, undefined, R1);
+  const e1 = x.json.comments.find((m) => m.id === m1);
+  ok("edit: the text changed and it says edited", e1.body === "hello again" && e1.edited_at > 0);
+  ok("edit: nobody else can edit it", (await req("PATCH", CS + "/comments/" + m1, { body: "hacked" }, GE)).code === 403 && (await req("PATCH", CT + "/comments/" + m2, { body: "hacked" }, R1)).code === 403);
+  ok("edit: a message can't become empty", (await req("PATCH", CT + "/comments/" + m1, { body: "  " }, R1)).code === 400);
+  ok("edit: a requester can't reach an internal note", (await req("PATCH", CT + "/comments/" + note, { body: "x" }, R1)).code === 404);
+  ok("edit: it is in the activity log without the words", dbq("select count(*) n from audit_log where action = 'message.edited'")[0].n >= 1 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("hello again"));
+  dbq("select 1");
+  { const d = new DatabaseSync(path.join(DATA, "helpdesk.db")); d.prepare("update comments set created_at = created_at - 3600 where id = ?").run(m1); d.close(); }
+  x = await req("PATCH", CT + "/comments/" + m1, { body: "too late" }, R1);
+  ok("edit: after 15 minutes it is locked", x.code === 403 && /15 minutes/.test(x.json.error), JSON.stringify(x.json));
+  ok("delete: …and so is deleting your own old message", (await req("DELETE", CT + "/comments/" + m1, undefined, R1)).code === 403);
+
+  // ---- reactions ----
+  x = await req("POST", CT + "/comments/" + m2 + "/react", { emoji: "👍" }, R1);
+  ok("react: a reaction is added", x.code === 200 && x.json.on === true);
+  await req("POST", CS + "/comments/" + m2 + "/react", { emoji: "👍" }, GE);
+  await req("POST", CS + "/comments/" + m2 + "/react", { emoji: "🎉" }, GE);
+  x = await req("GET", CT, undefined, R1);
+  const r2 = x.json.comments.find((m) => m.id === m2).reactions;
+  const up = r2.find((r) => r.emoji === "👍");
+  ok("react: counts, who, and whether it is mine", up?.n === 2 && up.mine === true && up.names.includes("You") && r2.find((r) => r.emoji === "🎉")?.mine === false, JSON.stringify(r2));
+  x = await req("POST", CT + "/comments/" + m2 + "/react", { emoji: "👍" }, R1);
+  ok("react: the same emoji again takes it back", x.json.on === false && (await req("GET", CT, undefined, R1)).json.comments.find((m) => m.id === m2).reactions.find((r) => r.emoji === "👍")?.n === 1);
+  ok("react: only a single emoji is accepted", (await req("POST", CT + "/comments/" + m2 + "/react", { emoji: "hello" }, R1)).code === 400 && (await req("POST", CT + "/comments/" + m2 + "/react", { emoji: "👍👍" }, R1)).code === 400 && (await req("POST", CT + "/comments/" + m2 + "/react", { emoji: "<b>" }, R1)).code === 400);
+  ok("react: a requester can't react to an internal note", (await req("POST", CT + "/comments/" + note + "/react", { emoji: "👍" }, R1)).code === 404);
+  ok("react: someone else's ticket is out of reach", (await req("POST", "/api/tickets/" + tk.id + "/comments/" + m2 + "/react", { emoji: "👍" }, jar())).code === 401);
+
+  // ---- delete ----
+  await req("POST", CT + "/comments", { body: "oops wrong chat" }, R1);
+  const m3 = dbq("select id from comments where ticket_id = ? order by id desc limit 1", tk.id)[0].id;
+  await req("POST", CT + "/comments/" + m3 + "/react", { emoji: "😮" }, R1);
+  ok("delete: an agent can't delete the requester's message", (await req("DELETE", CS + "/comments/" + m3, undefined, GE)).code === 403);
+  x = await req("DELETE", CT + "/comments/" + m3, undefined, R1);
+  ok("delete: you can take back your own message", x.code === 200);
+  const gone = (await req("GET", CT, undefined, R1)).json.comments.find((m) => m.id === m3);
+  ok("delete: its words and reactions are gone, the place stays", gone.deleted_at > 0 && gone.body === "" && gone.reactions.length === 0 && dbq("select count(*) n from comments where id = ?", m3)[0].n === 1);
+  ok("delete: it can't be edited or reacted to afterwards", (await req("PATCH", CT + "/comments/" + m3, { body: "x" }, R1)).code === 409 && (await req("POST", CT + "/comments/" + m3 + "/react", { emoji: "👍" }, R1)).code === 409);
+  await req("POST", CS + "/comments", { body: "an admin can remove this", internal: false }, GE);
+  const m4 = dbq("select id from comments where ticket_id = ? order by id desc limit 1", tk.id)[0].id;
+  ok("delete: an admin can remove someone else's message", (await req("DELETE", CS + "/comments/" + m4, undefined, A)).code === 200 && dbq("select deleted_at d from comments where id = ?", m4)[0].d > 0);
+  ok("delete: it is in the activity log without the words", dbq("select count(*) n from audit_log where action = 'message.deleted'")[0].n >= 2 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("oops wrong chat"));
+
+  // ---- typing ----
+  ok("typing: either side can announce it (nothing is stored)", (await req("POST", CT + "/typing", {}, R1)).code === 200 && (await req("POST", CS + "/typing", { internal: true }, GE)).code === 200 && (await req("POST", CT + "/typing", {}, jar())).code === 401);
+
+  // ---- the company GIF library ----
+  const up2 = async (session, name, bytes, title) => {
+    const fd = new FormData();
+    fd.append("file", new Blob([bytes]), name);
+    if (title) fd.append("title", title);
+    const res = await fetch(BASE + "/api/admin/gifs/library", { method: "POST", headers: { cookie: session.cookie }, body: fd });
+    const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    return { code: res.status, json };
+  };
+  ok("library: an agent can't reach the admin GIF settings (404)", (await up2(GE, "a.gif", GIF_BYTES)).code === 404 && (await req("GET", "/api/admin/gifs", undefined, GE)).code === 404);
+  ok("library: a renamed non-GIF is refused", (await up2(A, "fake.gif", Buffer.from("not a gif at all, just text"))).code === 415);
+  x = await up2(A, "thumbs.gif", GIF_BYTES, "Thumbs up");
+  ok("library: an admin adds a GIF", x.code === 201 && x.json.title === "Thumbs up", JSON.stringify(x.json));
+  const libId = x.json.id;
+  x = await req("GET", "/api/gifs/library", undefined, R1);
+  ok("library: everyone can see it", x.json.items.some((g) => g.id === libId && g.title === "Thumbs up"));
+  const gimg = await rawGet(R1, "/api/gifs/library/" + libId + "/img");
+  ok("library: the picture is served as a GIF, safely", gimg.status === 200 && gimg.headers.get("content-type") === "image/gif" && gimg.headers.get("x-content-type-options") === "nosniff");
+  ok("library: not for people who are signed out", (await req("GET", "/api/gifs/library", undefined, jar())).code === 401);
+  x = await req("POST", CT + "/gif", { source: "library", id: libId, caption: "thanks!" }, R1);
+  ok("library: a GIF can be sent in the chat", x.code === 201, JSON.stringify(x.json));
+  const gm = (await req("GET", CT, undefined, R1)).json.comments.filter((m) => m.kind === "gif").pop();
+  ok("library: it arrives as a GIF message with its caption and a real image", gm?.body === "thanks!" && gm.files?.[0]?.mime === "image/gif", JSON.stringify(gm));
+  const gfile = await rawGet(R1, CT + "/attachments/" + gm.files[0].id);
+  ok("library: the image is served from the ticket", gfile.status === 200 && gfile.headers.get("content-type") === "image/gif");
+  ok("library: a GIF can't be edited, but can be deleted", (await req("PATCH", CT + "/comments/" + gm.id, { body: "x" }, R1)).code === 400 && (await req("DELETE", CT + "/comments/" + gm.id, undefined, R1)).code === 200 && dbq("select count(*) n from attachments where comment_id = ?", gm.id)[0].n === 0);
+  ok("library: sending one that is not there is a 404", (await req("POST", CT + "/gif", { source: "library", id: 99999 }, R1)).code === 404 && (await req("POST", CT + "/gif", { source: "nope", id: 1 }, R1)).code === 400);
+
+  // ---- GIPHY, the SDK way: browsers talk to GIPHY, the server only hands out the public key and stores an id ----
+  const home = async () => (await rawGet(R1, "/")).headers.get("content-security-policy") ?? "";
+  x = await req("GET", "/api/gifs/config", undefined, R1);
+  ok("giphy: off at first (no key)", x.json.giphy === null && x.json.library >= 1);
+  ok("giphy: the page's security policy does not mention GIPHY while it is off", !/giphy/i.test(await home()));
+  const staffPolicy = async (p) => (await rawGet(A, p)).headers.get("content-security-policy") ?? "";
+  ok("giphy: …but the admin and agent pages can always reach it (so the key can be tested the moment it is pasted)", /connect-src[^;]*api\.giphy\.com/.test(await staffPolicy("/admin")) && /connect-src[^;]*api\.giphy\.com/.test(await staffPolicy("/agent")) && !/script-src[^;]*giphy/.test(await staffPolicy("/admin")));
+  ok("giphy: a GIPHY GIF can't be sent while it is off", (await req("POST", CT + "/gif", { source: "giphy", id: "abc12345" }, R1)).code === 409);
+  ok("giphy: a badly formed key is refused", (await req("PUT", "/api/admin/gifs/settings", { key: "short" }, A)).code === 400 && (await req("PUT", "/api/admin/gifs/settings", { key: "has a space in it 123" }, A)).code === 400);
+  ok("giphy: an agent can't change it (404)", (await req("PUT", "/api/admin/gifs/settings", { key: giphy.key }, GE)).code === 404);
+  await req("PUT", "/api/admin/gifs/settings", { key: giphy.key }, A);
+  x = await req("GET", "/api/gifs/config", undefined, R1);
+  ok("giphy: with a key, signed-in people are handed the public SDK key", x.json.giphy?.key === giphy.key, JSON.stringify(x.json));
+  ok("giphy: staff are too, signed-out people are not", (await req("GET", "/api/staff/gifs/config", undefined, GE)).json.giphy?.key === giphy.key && (await req("GET", "/api/gifs/config", undefined, jar())).code === 401);
+  x = await req("GET", "/api/admin/gifs", undefined, A);
+  ok("giphy: the admin page says it is on without echoing the key", x.json.giphy.configured === true && x.json.giphy.enabled === true && x.json.giphy.source === "saved" && !JSON.stringify(x.json).includes(giphy.key));
+  ok("giphy: the key is stored sealed and is not in the activity log", !dbq("select group_concat(value) v from settings")[0].v.includes(giphy.key) && !dbq("select group_concat(summary) s from audit_log")[0].s.includes(giphy.key));
+  const policy = await home();
+  ok("giphy: while on, the security policy lets the page reach GIPHY, and only GIPHY", /connect-src[^;]*https:\/\/api\.giphy\.com/.test(policy) && /connect-src[^;]*https:\/\/pingback\.giphy\.com/.test(policy) && /img-src[^;]*https:\/\/\*\.giphy\.com/.test(policy) && !/script-src[^;]*giphy/.test(policy), policy);
+  ok("giphy: the old server-side search and picture proxy are gone", (await req("GET", "/api/gifs/search?q=cat", undefined, R1)).code === 404 && (await req("GET", "/api/gifs/trending", undefined, R1)).code === 404 && (await rawGet(R1, "/api/gifs/img/abc12345")).status === 404);
+  x = await req("POST", CT + "/gif", { source: "giphy", id: "abc12345", caption: "this one" }, R1);
+  ok("giphy: sending one stores only its id", x.code === 201, JSON.stringify(x.json));
+  const gg = (await req("GET", CT, undefined, R1)).json.comments.filter((m) => m.kind === "giphy").pop();
+  ok("giphy: …as a GIPHY message with the id and caption, no file, no copy", gg?.gif_ref === "abc12345" && gg.body === "this one" && gg.files.length === 0 && dbq("select count(*) n from attachments where comment_id = ?", gg.id)[0].n === 0, JSON.stringify(gg));
+  ok("giphy: the server never contacted GIPHY", giphy.hits === 0);
+  ok("giphy: a bad or made-up id is refused", (await req("POST", CT + "/gif", { source: "giphy", id: "../etc/passwd" }, R1)).code === 400 && (await req("POST", CT + "/gif", { source: "giphy", id: "bad id" }, R1)).code === 400 && (await req("POST", CT + "/gif", { source: "giphy" }, R1)).code === 400);
+  ok("giphy: the IT side can send one too, and it is not editable", (await req("POST", CS + "/gif", { source: "giphy", id: "xyz98765" }, GE)).code === 201 && (await req("PATCH", CT + "/comments/" + gg.id, { body: "x" }, R1)).code === 400);
+  ok("giphy: a GIPHY GIF can be reacted to and deleted", (await req("POST", CT + "/comments/" + gg.id + "/react", { emoji: "😂" }, R1)).code === 200 && (await req("DELETE", CT + "/comments/" + gg.id, undefined, R1)).code === 200 && (await req("GET", CT, undefined, R1)).json.comments.find((m) => m.id === gg.id).body === "");
+  await req("PUT", "/api/admin/gifs/settings", { enabled: false }, A);
+  ok("giphy: switched off for everyone: no key is handed out, the policy closes, sending stops", (await req("GET", "/api/gifs/config", undefined, R1)).json.giphy === null && !/giphy/i.test(await home()) && (await req("POST", CT + "/gif", { source: "giphy", id: "abc12345" }, R1)).code === 409 && (await req("GET", "/api/admin/gifs", undefined, A)).json.giphy.enabled === false);
+  await req("PUT", "/api/admin/gifs/settings", { enabled: true }, A);
+  ok("giphy: switching it back on works without re-entering the key", (await req("GET", "/api/gifs/config", undefined, R1)).json.giphy?.key === giphy.key);
+  ok("giphy: removing the key turns it off", (await req("PUT", "/api/admin/gifs/settings", { key: "-" }, A)).code === 200 && (await req("GET", "/api/gifs/config", undefined, R1)).json.giphy === null);
+  await req("PUT", "/api/admin/gifs/settings", { key: giphy.key }, A);
+  x = await req("DELETE", "/api/admin/gifs/library/" + libId, undefined, A);
+  ok("library: an admin can remove a GIF", x.code === 200 && (await req("GET", "/api/gifs/library", undefined, R1)).json.items.every((g) => g.id !== libId));
+
+  // a staff GIF reaches the requester's email as a plain line, not an empty quote
+  await req("POST", CS + "/gif", { source: "library", id: (await up2(A, "wave.gif", GIF_BYTES, "Wave")).json.id }, GE);
+  await new Promise((r) => setTimeout(r, 2800));
+  ok("emails: a reply that is only a GIF is described, not blank", /to=chat\.person@[^\n]*\n?[\s\S]{0,500}Sent a GIF\./.test(log));
+}
+
+{ // New: outage banner, Teams alerts, auto-close, search, duplicates and request forms
+  const mkUser = async (name) => { const j = jar(); await req("POST", "/api/identify", { name, email: name.toLowerCase().replace(/ /g, ".") + "@" + DOMAIN, new_pin: "528394" }, j); return j; };
+  const newTicket = async (j, title, extra = {}) => (await req("POST", "/api/tickets", { title, description: "A description that is long enough.", category_id: 5, ...extra }, j)).json;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (fn, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(150); } return fn(); };
+  let x;
+
+  // ---- the outage banner ----
+  const RQb = await mkUser("Banner Person");
+  ok("banner: a requester can't post one", (await req("PUT", "/api/staff/announcement", { text: "x" }, RQb)).code === 401);
+  ok("banner: it needs some words", (await req("PUT", "/api/staff/announcement", { text: "   " }, GE)).code === 400);
+  x = await req("PUT", "/api/staff/announcement", { text: "Wi-Fi is down on floor 2. IT is on it.", level: "outage", minutes: 60 }, GE);
+  ok("banner: an agent posts it", x.code === 200 && x.json.announcement.level === "outage" && x.json.announcement.until > Date.now() / 1000);
+  x = await req("GET", "/api/config", undefined, jar());
+  ok("banner: everyone gets it with the page, signed in or not", x.json.system.announcement?.text === "Wi-Fi is down on floor 2. IT is on it." && x.json.system.announcement.level === "outage" && !!x.json.system.announcement.by, JSON.stringify(x.json.system));
+  await req("PUT", "/api/staff/announcement", { text: "<b>Bold</b> x".repeat(40), level: "nonsense" }, GE);
+  x = await req("GET", "/api/config", undefined, jar());
+  ok("banner: the text is capped and an unknown kind becomes a notice", x.json.system.announcement.text.length <= 200 && x.json.system.announcement.level === "info");
+  x = await req("DELETE", "/api/staff/announcement", undefined, GE);
+  ok("banner: IT clears it", x.code === 200 && (await req("GET", "/api/config", undefined, jar())).json.system.announcement === null);
+  ok("banner: posting and clearing are in the activity log", dbq("select count(*) n from audit_log where action in ('announcement.posted','announcement.cleared')")[0].n >= 3);
+
+  // ---- Teams alerts ----
+  ok("teams: an agent can't reach it (404)", (await req("GET", "/api/admin/teams", undefined, GE)).code === 404);
+  ok("teams: a webhook that is not a web address is refused", (await req("PUT", "/api/admin/teams", { url: "ftp://example.com/x" }, A)).code === 400 && (await req("PUT", "/api/admin/teams", { url: "not a url" }, A)).code === 400);
+  ok("teams: testing before setting it up says so", (await req("POST", "/api/admin/teams/test", {}, A)).code === 409);
+  const HOOK = IDP + "/teams/hook?sig=SECRET-WEBHOOK-SIG";
+  x = await req("PUT", "/api/admin/teams", { url: HOOK, events: { new_ticket: true, sla_breach: true, call_request: true, not_fixed: true } }, A);
+  ok("teams: an admin saves the address", x.code === 200);
+  x = await req("GET", "/api/admin/teams", undefined, A);
+  ok("teams: the address is never sent back or stored in the clear", x.json.configured === true && !JSON.stringify(x.json).includes("SECRET-WEBHOOK-SIG") && !dbq("select group_concat(value) v from settings")[0].v.includes("SECRET-WEBHOOK-SIG") && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("SECRET-WEBHOOK-SIG"));
+  teams.posts.length = 0;
+  x = await req("POST", "/api/admin/teams/test", {}, A);
+  ok("teams: the test message arrives as a card", x.code === 200 && teams.posts.length === 1 && teams.posts[0].attachments[0].contentType === "application/vnd.microsoft.card.adaptive" && JSON.stringify(teams.posts[0]).includes("Test message"));
+  teams.posts.length = 0;
+  const RQt = await mkUser("Teams Person");
+  const tt = await newTicket(RQt, "Teams alert check: projector dead");
+  ok("teams: a new ticket is posted with its number, title and who raised it", await until(() => teams.posts.length >= 1) && JSON.stringify(teams.posts[0]).includes(tt.ref) && JSON.stringify(teams.posts[0]).includes("projector dead") && JSON.stringify(teams.posts[0]).includes("Teams Person"), JSON.stringify(teams.posts));
+  ok("teams: …and nothing private (no description, no email address)", !JSON.stringify(teams.posts[0]).includes("long enough") && !JSON.stringify(teams.posts[0]).includes("@" + DOMAIN));
+  await req("PUT", "/api/admin/teams", { events: { new_ticket: false } }, A);
+  teams.posts.length = 0;
+  await newTicket(RQt, "Teams alert check: switched off event");
+  await sleep(1200);
+  ok("teams: an event that is switched off posts nothing", teams.posts.length === 0);
+  teams.posts.length = 0;
+  x = await req("POST", "/api/tickets/" + tt.id + "/call-request", { note: "please ring me" }, RQt);
+  ok("teams: a call request is posted", x.code === 201 && (await until(() => teams.posts.some((p) => JSON.stringify(p).includes("asked for a call")))));
+  await req("PATCH", ST + "/" + tt.id, { status: "resolved" }, A);
+  teams.posts.length = 0;
+  await req("POST", "/api/tickets/" + tt.id + "/rating", { rating: -1, comment: "still dead" }, RQt);
+  ok("teams: 'not fixed' is posted", await until(() => teams.posts.some((p) => JSON.stringify(p).includes("was not fixed") && JSON.stringify(p).includes("still dead"))));
+  teams.status = 404;
+  x = await req("POST", "/api/admin/teams/test", {}, A);
+  ok("teams: a webhook that is gone gives a plain message and is recorded", x.code === 502 && /no longer valid|not valid any more/.test(x.json.error) && (await req("GET", "/api/admin/teams", undefined, A)).json.last.ok === false);
+  teams.status = 200;
+  ok("teams: removing the address stops it", (await req("PUT", "/api/admin/teams", { url: "-" }, A)).code === 200 && (await req("GET", "/api/admin/teams", undefined, A)).json.configured === false);
+
+  // ---- close resolved tickets automatically ----
+  const RQa = await mkUser("Auto Close");
+  const old1 = await newTicket(RQa, "Auto close: old resolved");
+  const new1 = await newTicket(RQa, "Auto close: fresh resolved");
+  await req("PATCH", ST + "/" + old1.id, { status: "resolved" }, A);
+  await req("PATCH", ST + "/" + new1.id, { status: "resolved" }, A);
+  dbx("update tickets set resolved_at = unixepoch() - 5*86400 where id = ?", old1.id);
+  ok("auto-close: an agent can't change it (404), nor a bad number", (await req("PUT", "/api/admin/automation", { auto_close_days: 3 }, GE)).code === 404 && (await req("PUT", "/api/admin/automation", { auto_close_days: 4 }, A)).code === 400);
+  x = await req("GET", "/api/admin/automation", undefined, A);
+  ok("auto-close: off at first", x.json.auto_close_days === 0 && x.json.choices.includes(7));
+  x = await req("PUT", "/api/admin/automation", { auto_close_days: 3 }, A);
+  ok("auto-close: switching it on closes what is already old enough, now", x.code === 200 && x.json.closed >= 1 && dbq("select status from tickets where id = ?", old1.id)[0].status === "closed");
+  ok("auto-close: …and leaves a fresh resolved ticket alone", dbq("select status from tickets where id = ?", new1.id)[0].status === "resolved");
+  ok("auto-close: the requester is told and the history shows it", dbq("select count(*) n from notifications where ticket_id = ? and title like '%closed%'", old1.id)[0].n === 1 && dbq("select count(*) n from ticket_events where ticket_id = ? and field = 'status' and new_value = 'closed' and actor_id is null", old1.id)[0].n === 1);
+  ok("auto-close: it is in the activity log as done by the system", dbq("select count(*) n from audit_log where action = 'automation.auto_close' and actor_role = 'system'")[0].n >= 1);
+  x = await req("GET", "/api/admin/automation", undefined, A);
+  ok("auto-close: the page can say how many it closed last", x.json.auto_close_days === 3 && x.json.last.closed >= 1);
+  await req("PUT", "/api/admin/automation", { auto_close_days: 0 }, A);
+
+  // ---- ticket search for staff ----
+  const found = await req("GET", ST + "?q=" + encodeURIComponent("Auto close: fresh") + "&status=resolved", undefined, GE);
+  ok("search: staff find a ticket by words in its title", found.json.length === 1 && found.json[0].id === new1.id);
+  ok("search: by its number and by the requester's name", (await req("GET", ST + "?q=" + new1.ref, undefined, GE)).json.some((r) => r.id === new1.id) && (await req("GET", ST + "?q=Auto%20Close&status=resolved", undefined, GE)).json.length >= 1);
+  ok("search: a percent sign or quote is just text, not a pattern", (await req("GET", ST + "?q=%25", undefined, GE)).code === 200 && (await req("GET", ST + "?q=%27%22", undefined, GE)).code === 200);
+
+  // ---- same problem as another ticket ----
+  const rA = await mkUser("Dup Root"), rB = await mkUser("Dup Second"), rC = await mkUser("Dup Third");
+  const tA = await newTicket(rA, "Dup: wifi down floor 3"), tB = await newTicket(rB, "Dup: no wifi"), tC = await newTicket(rC, "Dup: wifi gone");
+  ok("duplicates: a requester can't link tickets", (await req("POST", "/api/tickets/" + tB.id + "/duplicate", { of: tA.id }, rB)).code === 403);
+  ok("duplicates: not to itself, nor to a ticket that is not there", (await req("POST", ST + "/" + tB.id + "/duplicate", { of: tB.id }, GE)).code === 400 && (await req("POST", ST + "/" + tB.id + "/duplicate", { of: 99999 }, GE)).code === 404);
+  x = await req("POST", ST + "/" + tB.id + "/duplicate", { of: tA.id }, GE);
+  ok("duplicates: an agent links one ticket to the main one", x.code === 200 && x.json.of.ref === tA.ref, JSON.stringify(x.json));
+  x = await req("GET", "/api/tickets/" + tB.id, undefined, rB);
+  ok("duplicates: the requester is told in the chat and sees a banner (with the ticket number only)", x.json.duplicate_of.ref === tA.ref && !("title" in x.json.duplicate_of) && x.json.comments.some((m) => m.author_role !== "requester" && m.body.includes(tA.ref)), JSON.stringify(x.json.duplicate_of));
+  ok("duplicates: …and the main ticket's requester sees nothing about it", (await req("GET", "/api/tickets/" + tA.id, undefined, rA)).json.duplicate_of === null && (await req("GET", "/api/tickets/" + tA.id, undefined, rA)).json.duplicates.length === 0);
+  await req("POST", ST + "/" + tC.id + "/duplicate", { of: tB.id, message: "Same wifi problem as FG, we are on it." }, GE);
+  x = await req("GET", ST + "/" + tA.id, undefined, GE);
+  ok("duplicates: pointing at a duplicate links to the main ticket, and staff see all of them", x.json.duplicates.length === 2 && x.json.duplicates.every((d) => d.ref === tB.ref || d.ref === tC.ref), JSON.stringify(x.json.duplicates));
+  ok("duplicates: a custom message is what the requester gets", (await req("GET", "/api/tickets/" + tC.id, undefined, rC)).json.comments.some((m) => m.body === "Same wifi problem as FG, we are on it."));
+  ok("duplicates: the link shows in the staff chat history", (await req("GET", ST + "/" + tB.id, undefined, GE)).json.events.some((e) => e.field === "duplicate" && e.new_value === tA.ref));
+  ok("duplicates: a requester never gets the link event", !(await req("GET", "/api/tickets/" + tB.id, undefined, rB)).json.events.some((e) => e.field === "duplicate"));
+  x = await req("POST", ST + "/" + tA.id + "/comments", { body: "WIFI-BROADCAST: the switch is being replaced", internal: false, also_linked: true }, GE);
+  ok("duplicates: one reply can go to every linked ticket", x.code === 201 && x.json.also === 2);
+  ok("duplicates: …and arrives in each of their chats", [[rB, tB], [rC, tC]].every(async () => true) && (await req("GET", "/api/tickets/" + tB.id, undefined, rB)).json.comments.some((m) => m.body.startsWith("WIFI-BROADCAST")) && (await req("GET", "/api/tickets/" + tC.id, undefined, rC)).json.comments.some((m) => m.body.startsWith("WIFI-BROADCAST")));
+  x = await req("POST", ST + "/" + tA.id + "/comments", { body: "INTERNAL-NOT-BROADCAST", internal: true, also_linked: true }, GE);
+  ok("duplicates: an internal note is never sent to linked tickets", x.json.also === 0 && !(await req("GET", "/api/tickets/" + tB.id, undefined, rB)).json.comments.some((m) => m.body.includes("INTERNAL-NOT")));
+  await req("PATCH", ST + "/" + tA.id, { status: "resolved" }, GE);
+  ok("duplicates: resolving the main ticket resolves the ones that follow it, with a message", dbq("select status from tickets where id in (?, ?)", tB.id, tC.id).every((r) => r.status === "resolved") && (await req("GET", "/api/tickets/" + tB.id, undefined, rB)).json.comments.some((m) => m.body.includes("Good news")));
+  ok("duplicates: it is in the activity log", dbq("select count(*) n from audit_log where action in ('ticket.duplicate','ticket.duplicates_resolved')")[0].n >= 3);
+  const tD = await newTicket(await mkUser("Dup Fourth"), "Dup: also wifi");
+  await req("POST", ST + "/" + tD.id + "/duplicate", { of: tA.id }, GE);
+  x = await req("DELETE", ST + "/" + tD.id + "/duplicate", undefined, GE);
+  ok("duplicates: a link can be undone", x.code === 200 && (await req("GET", ST + "/" + tD.id, undefined, GE)).json.duplicate_of === null);
+  ok("duplicates: a closed ticket can't be the target", (await req("PATCH", ST + "/" + tA.id, { status: "closed" }, A)).code === 200 && (await req("POST", ST + "/" + tD.id + "/duplicate", { of: tA.id }, GE)).code === 409);
+
+  // ---- request forms ----
+  let cats = (await req("GET", "/api/tickets/categories", undefined, RQb)).json;
+  const printingId = cats.find((c) => c.name === "Printing").id;
+  ok("forms: nothing is asked until an admin sets a form up (the suite starts without the starter forms)", cats.every((c) => c.fields.length === 0));
+  await req("PUT", "/api/admin/forms/" + printingId, { fields: [{ label: "Which printer?", type: "text", required: true }, { label: "What is it doing?", type: "select", required: true, options: ["Won't print", "Paper jam", "Something else"] }] }, A);
+  cats = (await req("GET", "/api/tickets/categories", undefined, RQb)).json;
+  const printing = cats.find((c) => c.name === "Printing"), other = cats.find((c) => c.name === "Other");
+  ok("forms: once set, requesters get the questions with the category list (none for Other)", printing.fields.length === 2 && printing.fields[0].required === true && other.fields.length === 0, JSON.stringify(printing.fields));
+  x = await req("POST", "/api/tickets", { title: "Form check printer", description: "The printer will not print at all.", category_id: printing.id }, RQb);
+  ok("forms: a required question must be answered", x.code === 400 && /Please answer/.test(x.json.error), JSON.stringify(x.json));
+  const q1 = printing.fields[0], q2 = printing.fields[1];
+  x = await req("POST", "/api/tickets", { title: "Form check printer", description: "The printer will not print at all.", category_id: printing.id, answers: { [q1.id]: "Canon on floor 2", [q2.id]: "Not a real choice" } }, RQb);
+  ok("forms: a choice must be one of the options", x.code === 400 && /pick one/.test(x.json.error));
+  x = await req("POST", "/api/tickets", { title: "Form check printer", description: "The printer will not print at all.", category_id: printing.id, answers: { [q1.id]: "Canon on floor 2", [q2.id]: q2.options[1], f9: "ignored" } }, RQb);
+  ok("forms: a good answer is accepted", x.code === 201);
+  const withForm = x.json;
+  x = await req("GET", "/api/tickets/" + withForm.id, undefined, RQb);
+  ok("forms: the ticket keeps the question and the answer (and nothing the form did not ask)", x.json.answers.length === 2 && x.json.answers[0].label === q1.label && x.json.answers[0].value === "Canon on floor 2" && x.json.answers[1].value === q2.options[1] && !JSON.stringify(x.json.answers).includes("ignored"));
+  ok("forms: IT sees the same answers", (await req("GET", ST + "/" + withForm.id, undefined, GE)).json.answers.length === 2);
+  ok("forms: a category with no form takes a ticket with no answers (and ignores stray ones)", (await req("POST", "/api/tickets", { title: "Form check other", description: "Something else entirely here.", category_id: other.id, answers: { f1: "x" } }, RQb)).code === 201);
+  ok("forms: an agent can't edit forms (404)", (await req("PUT", "/api/admin/forms/" + printing.id, { fields: [] }, GE)).code === 404 && (await req("GET", "/api/admin/forms", undefined, GE)).code === 404);
+  ok("forms: a choice needs two options, and a form has at most 8 questions", (await req("PUT", "/api/admin/forms/" + printing.id, { fields: [{ label: "Pick", type: "select", options: ["only one"] }] }, A)).code === 400 && (await req("PUT", "/api/admin/forms/" + printing.id, { fields: Array.from({ length: 9 }, (_, i) => ({ label: "Q" + i, type: "text" })) }, A)).code === 400 && (await req("PUT", "/api/admin/forms/" + printing.id, { fields: [{ label: " ", type: "text" }] }, A)).code === 400);
+  x = await req("PUT", "/api/admin/forms/" + printing.id, { fields: [{ label: "Which printer <b>?", type: "text", required: true }, { label: "Colour?", type: "yesno", required: false }, { label: "Jam?", type: "select", required: false, options: ["Yes", "No", "Yes", " "] }] }, A);
+  ok("forms: an admin rewrites the questions (duplicate and blank options dropped)", x.code === 200 && x.json.fields.length === 3 && JSON.stringify(x.json.fields[2].options) === JSON.stringify(["Yes", "No"]) && x.json.fields.map((f) => f.id).join() === "f1,f2,f3", JSON.stringify(x.json));
+  x = await req("GET", "/api/tickets/" + withForm.id, undefined, RQb);
+  ok("forms: an earlier ticket still says what it was asked", x.json.answers[0].label === q1.label);
+  x = await req("POST", "/api/tickets", { title: "Form check yes no", description: "Another printer problem here.", category_id: printing.id, answers: { f1: "HP", f2: "Maybe" } }, RQb);
+  ok("forms: yes/no only accepts Yes or No", x.code === 400);
+  ok("forms: clearing a form turns the questions off", (await req("PUT", "/api/admin/forms/" + printing.id, { fields: [] }, A)).code === 200 && (await req("GET", "/api/tickets/categories", undefined, RQb)).json.find((c) => c.name === "Printing").fields.length === 0);
+  ok("forms: the change is in the activity log", dbq("select count(*) n from audit_log where action = 'forms.updated'")[0].n >= 2);
 }
 
 { // Admin: disable and delete clients

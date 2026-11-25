@@ -11,6 +11,7 @@ import { db } from "./db";
 import { mailInfo, sendTest } from "./notifier";
 import { settingsRoutes } from "./settings";
 import { getSetting, putSetting } from "./sla";
+import { currentAnnouncement, onAnnouncementChange } from "./announce";
 import { updates } from "./updates";
 import { BUILD, STARTED_AT } from "./version";
 
@@ -30,10 +31,11 @@ const ANNOUNCE_GRACE_MS = 30 * 60_000; // an announcement that is this long over
 
 export function snapshot() {
   const m = maintenance && Date.now() < maintenance.at + ANNOUNCE_GRACE_MS ? maintenance : null;
-  return { version: BUILD.id, restarting, maintenance: m };
+  return { version: BUILD.id, restarting, maintenance: m, announcement: currentAnnouncement() };
 }
 setHello(() => JSON.stringify(snapshot()));
 const push = () => broadcast("system", JSON.stringify(snapshot()));
+onAnnouncementChange(push); // a posted or cleared banner reaches every open screen at once
 
 /** Called from the shutdown handler: tell every open screen before the connections close. */
 export function announceRestart() {

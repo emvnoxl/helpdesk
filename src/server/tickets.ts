@@ -9,6 +9,10 @@ import { attachments, filesFor, usableDrafts } from "./attachments";
 import { dueAt, slaHours, workBetween } from "./sla";
 import { taskRoutes, tasksFor } from "./tasks";
 import { callRoutes, pendingRequest } from "./calls";
+import { chatRoutes, EDIT_WINDOW } from "./chat";
+import { teamsNotify } from "./teams";
+import { dupRoutes, openDuplicates, resolveDuplicates } from "./duplicates";
+import { validateAnswers } from "./forms";
 
 const PRIORITIES = { low: 1, medium: 2, high: 3, urgent: 4 } as const;
 const STATUSES = ["open", "in_progress", "waiting", "resolved", "closed"] as const;
@@ -32,16 +36,16 @@ tickets.route("/", callRoutes); // voice calls and screen sharing: /:id/call, /c
     by checklists and by the recurring-ticket scheduler. The caller writes the activity-log line, because only it knows who and why. */
 export async function createTicket(
   who: { id: number; name: string },
-  o: { title: string; description: string; categoryId?: number | null; assetTag?: string | null; deviceId?: number | null; priority?: Priority; assigneeId?: number | null; source?: "web" | "email" | "checklist" | "recurring"; tellEveryone?: boolean },
+  o: { title: string; description: string; categoryId?: number | null; assetTag?: string | null; deviceId?: number | null; priority?: Priority; assigneeId?: number | null; answers?: string | null; source?: "web" | "email" | "checklist" | "recurring"; tellEveryone?: boolean },
 ): Promise<{ id: number; ref: string }> {
   const priority: Priority = o.priority ?? "medium";
   const ts = now();
   const row = await db
     .prepare(
-      `INSERT INTO tickets (title, description, priority, priority_rank, category_id, requester_id, assignee_id, asset_tag, due_at, created_at, updated_at, device_id, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO tickets (title, description, priority, priority_rank, category_id, requester_id, assignee_id, asset_tag, due_at, created_at, updated_at, device_id, source, answers)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .bind(o.title, o.description, priority, PRIORITIES[priority], o.categoryId ?? null, who.id, o.assigneeId ?? null, o.assetTag ?? null, dueAt(await slaHours(), priority, ts), ts, ts, o.deviceId ?? null, o.source ?? "web")
+    .bind(o.title, o.description, priority, PRIORITIES[priority], o.categoryId ?? null, who.id, o.assigneeId ?? null, o.assetTag ?? null, dueAt(await slaHours(), priority, ts), ts, ts, o.deviceId ?? null, o.source ?? "web", o.answers ?? null)
     .first<{ id: number }>();
   if (!row) throw new Error("create failed");
   const ref = `FG-${String(row.id).padStart(4, "0")}`;
@@ -53,12 +57,13 @@ export async function createTicket(
     notifyStaff(row.id, "new_ticket", `New ticket ${ref}`, `${o.title} · from ${who.name}${via}`, ts, o.tellEveryone ? 0 : who.id),
   ]);
   liveChanged(row.id);
+  if (o.source === "web" || o.source === "email" || !o.source) teamsNotify("new_ticket", { ticketId: row.id, title: `New ticket ${ref}: ${o.title}`.slice(0, 200), text: `From ${who.name}${via}` });
   return { id: row.id, ref };
 }
 
 tickets.get("/categories", async (c) => {
-  const { results } = await db.prepare("SELECT id, name FROM categories ORDER BY name").all();
-  return c.json(results);
+  const { results } = await db.prepare("SELECT id, name, form FROM categories ORDER BY name").all<{ id: number; name: string; form: string | null }>();
+  return c.json(results.map((r) => ({ id: r.id, name: r.name, fields: (() => { try { const v = JSON.parse(r.form ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; } })() })));
 });
 
 // Staff-only: who a ticket can be assigned to
@@ -84,6 +89,12 @@ tickets.get("/", async (c) => {
     else if (isStatus(status)) (where.push("t.status = ?"), binds.push(status));
     if (c.req.query("assignee") === "me") (where.push("t.assignee_id = ?"), binds.push(user.id));
     if (c.req.query("assignee") === "none") where.push("t.assignee_id IS NULL");
+    const q = (c.req.query("q") ?? "").trim().slice(0, 80);
+    if (q) {
+      const like = `%${q.replace(/[\\%_]/g, (m) => "\\" + m)}%`;
+      where.push("(t.ref LIKE ? ESCAPE '\\' OR t.title LIKE ? ESCAPE '\\' OR u.name LIKE ? ESCAPE '\\')");
+      binds.push(like, like, like);
+    }
   }
   if (before) (where.push("t.id < ?"), binds.push(before));
 
@@ -113,7 +124,9 @@ tickets.post("/", async (c) => {
   // Remember which computer this was raised from, so IT sees the machine inside the ticket.
   const devKey = typeof body.device_key === "string" && /^[a-f0-9]{32}$/.test(body.device_key) ? body.device_key : null;
   const dev = devKey ? await db.prepare("SELECT id FROM devices WHERE user_id = ? AND device_key = ?").bind(user.id, devKey).first<{ id: number }>() : null;
-  const row = await createTicket(user, { title, description, priority, categoryId, assetTag, deviceId: dev?.id ?? null });
+  const ans = await validateAnswers(categoryId, body.answers);
+  if (!ans.ok) return c.json({ error: ans.error }, 400);
+  const row = await createTicket(user, { title, description, priority, categoryId, assetTag, deviceId: dev?.id ?? null, answers: ans.json });
   const ref = row.ref;
   await audit(c, "ticket.created", "ticket", `Raised ${ref}: ${title}`, { ticketId: row.id });
   return c.json({ id: row.id, ref }, 201);
@@ -139,7 +152,7 @@ tickets.get("/:id{[0-9]+}", async (c) => {
   const [thread, log] = await db.batch([
     db
       .prepare(
-        `SELECT c.id, c.body, c.internal, c.created_at, c.author_id, u.name AS author, u.role AS author_role
+        `SELECT c.id, c.body, c.internal, c.created_at, c.edited_at, c.deleted_at, c.kind, c.gif_ref, c.author_id, u.name AS author, u.role AS author_role
          FROM comments c JOIN users u ON u.id = c.author_id
          WHERE c.ticket_id = ? ${staffView ? "" : "AND c.internal = 0"}
          ORDER BY c.created_at ASC, c.id ASC LIMIT 300`,
@@ -152,7 +165,7 @@ tickets.get("/:id{[0-9]+}", async (c) => {
          FROM ticket_events e
          LEFT JOIN users a ON a.id = e.actor_id
          LEFT JOIN users n ON e.field = 'assignee' AND CAST(n.id AS TEXT) = e.new_value
-         WHERE e.ticket_id = ? AND e.field IN (${staffView ? "'status','assignee','call','call_request','priority'" : "'status','assignee','call','call_request'"})
+         WHERE e.ticket_id = ? AND e.field IN (${staffView ? "'status','assignee','call','call_request','priority','duplicate'" : "'status','assignee','call','call_request'"})
          ORDER BY e.created_at ASC, e.id ASC LIMIT 200`,
       )
       .bind(id),
@@ -164,8 +177,55 @@ tickets.get("/:id{[0-9]+}", async (c) => {
     if (d) device = shapeDevice(d);
   }
   const files = await filesFor(id, staffView);
-  const comments = thread.results.map((m: any) => ({ ...m, files: files.byComment.get(m.id) ?? [] }));
-  return c.json({ ticket: t, comments, events: log.results, me: user.id, device, files: files.ticket, tasks: staffView ? await tasksFor(id) : undefined, call_request: await pendingRequest(id) });
+  // Reactions under each message: emoji, how many, whether I gave it, and who (a few names for the tooltip).
+  const ids = thread.results.map((m: any) => m.id as number);
+  const reactions = new Map<number, { emoji: string; n: number; mine: boolean; names: string[] }[]>();
+  if (ids.length) {
+    const { results } = await db
+      .prepare(`SELECT r.comment_id, r.emoji, r.user_id, u.name FROM comment_reactions r JOIN users u ON u.id = r.user_id WHERE r.comment_id IN (${ids.map(() => "?").join(",")}) ORDER BY r.created_at`)
+      .bind(...ids)
+      .all<{ comment_id: number; emoji: string; user_id: number; name: string }>();
+    for (const r of results) {
+      const list = reactions.get(r.comment_id) ?? [];
+      let e = list.find((x) => x.emoji === r.emoji);
+      if (!e) { e = { emoji: r.emoji, n: 0, mine: false, names: [] }; list.push(e); }
+      e.n++;
+      if (r.user_id === user.id) e.mine = true;
+      if (e.names.length < 6) e.names.push(r.user_id === user.id ? "You" : r.name);
+      reactions.set(r.comment_id, list);
+    }
+  }
+  // Read receipts: opening the ticket (a visible tab: the browser sends peek=1 from a hidden one) records the newest message this person
+  // has had on screen. A requester's marker only ever covers messages a requester can see.
+  const lastVisible = ids.length ? Math.max(...ids) : 0;
+  if (c.req.query("peek") !== "1" && lastVisible) {
+    const r = await db
+      .prepare(
+        `INSERT INTO ticket_reads (ticket_id, user_id, last_comment_id, seen_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (ticket_id, user_id) DO UPDATE SET last_comment_id = excluded.last_comment_id, seen_at = excluded.seen_at WHERE excluded.last_comment_id > ticket_reads.last_comment_id`,
+      )
+      .bind(id, user.id, lastVisible, now())
+      .run();
+    if (r.meta.changes) liveChanged(id); // the other side's "Seen" appears at once
+  }
+  // ...and the other side's marker: staff see whether the requester has seen; the requester sees whether IT has.
+  const seen = staffView
+    ? await db.prepare("SELECT r.last_comment_id AS id, r.seen_at AS at, u.name AS seen_by FROM ticket_reads r JOIN users u ON u.id = r.user_id WHERE r.ticket_id = ? AND r.user_id = ?").bind(id, t.requester_id).first<{ id: number; at: number; seen_by: string }>()
+    : await db.prepare("SELECT r.last_comment_id AS id, r.seen_at AS at, u.name AS seen_by FROM ticket_reads r JOIN users u ON u.id = r.user_id WHERE r.ticket_id = ? AND u.role IN ('agent','admin') ORDER BY r.last_comment_id DESC, r.seen_at DESC LIMIT 1").bind(id).first<{ id: number; at: number; seen_by: string }>();
+  const comments = thread.results.map((m: any) => ({ ...m, files: files.byComment.get(m.id) ?? [], reactions: reactions.get(m.id) ?? [] }));
+  // Same-problem links: staff see both directions with titles; a requester only learns that theirs is being handled with another.
+  const dupOfId = (t as any).duplicate_of as number | null;
+  const dupOf = dupOfId ? await db.prepare("SELECT id, ref, title, status FROM tickets WHERE id = ?").bind(dupOfId).first<{ id: number; ref: string; title: string; status: string }>() : null;
+  const duplicates = staffView
+    ? (await db.prepare("SELECT t.id, t.ref, t.title, t.status, u.name AS requester FROM tickets t JOIN users u ON u.id = t.requester_id WHERE t.duplicate_of = ? ORDER BY t.id LIMIT 50").bind(id).all()).results
+    : [];
+  let answers: unknown[] = [];
+  try { const v = JSON.parse((t as any).answers ?? "[]"); if (Array.isArray(v)) answers = v; } catch { /* none */ }
+  return c.json({
+    ticket: t, comments, events: log.results, me: user.id, device, files: files.ticket, tasks: staffView ? await tasksFor(id) : undefined, call_request: await pendingRequest(id),
+    seen: seen ? { id: seen.id, at: seen.at, by: seen.seen_by } : null, now: now(), edit_window: EDIT_WINDOW,
+    duplicate_of: dupOf ? (staffView ? dupOf : { ref: dupOf.ref }) : null, duplicates, answers,
+  });
 });
 
 // Staff update: status / priority / assignee, with event log + timestamps
@@ -274,6 +334,8 @@ tickets.patch("/:id{[0-9]+}", requireRole("agent", "admin"), async (c) => {
     }
   }
   if (changed) await audit(c, "ticket.priority_lock", "ticket", sets.includes("priority_locked = 1") ? `${cur.ref} priority locked by an admin` : `${cur.ref} priority released to agents`, { ticketId: id });
+  const toStatus = events.find((e) => e[0] === "status")?.[2];
+  if (toStatus === "resolved" || toStatus === "closed") await resolveDuplicates({ addComment, ticketForComment }, c, user, id, cur.ref);
   liveChanged(id);
   return c.json({ ok: true, changed: true });
 });
@@ -287,13 +349,13 @@ export const ticketForComment = (id: number) =>
 
 /** Adds a message to a ticket, with everything that follows from it: reopening, restarting the clock, the bell, the email to the
     requester and the activity log. The chat calls it (below) and so does incoming email (with c = null and via = "email"). */
-export async function addComment(c: Context<any> | null, user: Pick<User, "id" | "name" | "role">, id: number, t: TicketForComment, text: string, o: { internal?: boolean; draftIds?: number[]; via?: "email" } = {}) {
+export async function addComment(c: Context<any> | null, user: Pick<User, "id" | "name" | "role">, id: number, t: TicketForComment, text: string, o: { internal?: boolean; draftIds?: number[]; via?: "email"; kind?: "text" | "gif" | "giphy"; ref?: string } = {}) {
   const staff = user.role !== "requester";
   const internal = staff && o.internal ? 1 : 0;
   const draftIds = o.draftIds ?? [];
   const ts = now();
   const stmts = [
-    db.prepare("INSERT INTO comments (ticket_id, author_id, body, internal, created_at) VALUES (?, ?, ?, ?, ?)").bind(id, user.id, text, internal, ts),
+    db.prepare("INSERT INTO comments (ticket_id, author_id, body, internal, created_at, kind, gif_ref) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, user.id, text, internal, ts, o.kind ?? "text", o.ref ?? null),
     // Must stay right after the INSERT: it links the files to the message that was just written.
     db.prepare(`UPDATE attachments SET scope = 'comment', comment_id = last_insert_rowid() WHERE ticket_id = ? AND id IN (${draftIds.length ? draftIds.map(() => "?").join(",") : "NULL"})`).bind(id, ...draftIds),
   ];
@@ -302,7 +364,7 @@ export async function addComment(c: Context<any> | null, user: Pick<User, "id" |
     stmts.push(db.prepare("INSERT INTO ticket_events (ticket_id, actor_id, field, new_value, created_at) VALUES (?, ?, 'reply', CAST(last_insert_rowid() AS TEXT), ?)").bind(id, user.id, ts));
   }
   stmts.push(db.prepare("UPDATE tickets SET updated_at = ? WHERE id = ?").bind(ts, id));
-  const preview = text || (draftIds.length === 1 ? "Sent an attachment" : `Sent ${draftIds.length} attachments`);
+  const preview = text || (o.kind === "gif" || o.kind === "giphy" ? "Sent a GIF" : draftIds.length === 1 ? "Sent an attachment" : `Sent ${draftIds.length} attachments`);
   // First public staff reply counts as first response
   if (staff && !internal && !t.first_response_at && t.requester_id !== user.id) {
     stmts.push(db.prepare("UPDATE tickets SET first_response_at = ? WHERE id = ?").bind(ts, id));
@@ -346,6 +408,9 @@ export async function addComment(c: Context<any> | null, user: Pick<User, "id" |
   liveChanged(id);
 }
 
+chatRoutes(tickets, { addComment, ticketForComment }); // edit, delete, reactions, typing, GIFs
+dupRoutes(tickets, { addComment, ticketForComment }); // same problem as another ticket (staff)
+
 // Add comment. Only staff may post internal notes.
 tickets.post("/:id{[0-9]+}/comments", async (c) => {
   const user = c.get("user");
@@ -361,7 +426,12 @@ tickets.post("/:id{[0-9]+}/comments", async (c) => {
   // A closed ticket is finished: nobody can add to it (an admin can reopen it first).
   if (t.status === "closed") return c.json({ error: "This ticket is closed, so messages are turned off." }, 409);
   await addComment(c, user, id, t, text, { internal: body.internal === true, draftIds });
-  return c.json({ ok: true }, 201);
+  // "Also send to the linked tickets": the same words to every still-open duplicate (staff, public replies only; files stay on this ticket).
+  let also = 0;
+  if (body.also_linked === true && isStaff(user) && body.internal !== true && text) {
+    for (const d of await openDuplicates(id)) { const dt = await ticketForComment(d.id); if (dt) { await addComment(c, user, d.id, dt, text, {}); also++; } }
+  }
+  return c.json({ ok: true, also }, 201);
 });
 
 // The requester says whether it was really fixed. A thumbs-down on a resolved ticket sends it back to the queue.
@@ -398,6 +468,7 @@ tickets.post("/:id{[0-9]+}/rating", async (c) => {
     stmts.push(notifyUser(t.assignee_id, id, "status", `${user.name} confirmed ${t.ref} is fixed`, comment || t.title, ts));
   }
   await db.batch(stmts);
+  if (rating === -1) teamsNotify("not_fixed", { ticketId: id, title: `${t.ref} was not fixed`, text: `${user.name} says it is still a problem${comment ? `: ${comment}` : "."}`.slice(0, 300) });
   await audit(c, "ticket.rated", "ticket", `Rated ${t.ref} ${rating === 1 ? "fixed" : "not fixed"}${reopen ? " (reopened)" : ""}`, { ticketId: id });
   liveChanged(id);
   return c.json({ ok: true, reopened: reopen });

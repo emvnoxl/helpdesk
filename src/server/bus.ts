@@ -33,6 +33,10 @@ const lastSeen = new Map<string, number>();
 export function signal(keys: string[]) {
   for (const s of subs) if (keys.includes(s.key)) s.send("call", "{}");
 }
+/** "Someone is typing": to the other side of one ticket only. A staff typist reaches that ticket's requester; a requester reaches all staff. Nothing is stored. */
+export function typing(fromStaff: boolean, requesterId: number, data: string) {
+  for (const s of subs) if (fromStaff ? s.key === "r" + requesterId : s.key.startsWith("s")) s.send("typing", data);
+}
 /** Does this person have the helpdesk open? The stream reconnects every 10 minutes, so a few seconds of absence still counts. */
 export const online = (key: string) => [...subs].some((s) => s.key === key) || Date.now() - (lastSeen.get(key) ?? 0) < 15_000;
 /** Is anyone from IT at the helpdesk right now? (Shown to normal users on Home.) */

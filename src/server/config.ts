@@ -64,6 +64,8 @@ export const config = {
     logOnly: flag(env.MAIL_LOG_ONLY),
     intervalSeconds: Number(env.NOTIFY_INTERVAL_SECONDS) || 30,
     /** IT staff are emailed about a bell notification only if they have not read it after this many seconds (so no email while they are at the helpdesk). */
+    /** A client is emailed about a reply/status change only if they still have not looked at it in the helpdesk after this many seconds. */
+    requesterDelaySeconds: env.REQUESTER_EMAIL_DELAY_SECONDS !== undefined && env.REQUESTER_EMAIL_DELAY_SECONDS.trim() !== "" && Number.isFinite(Number(env.REQUESTER_EMAIL_DELAY_SECONDS)) ? Math.max(0, Number(env.REQUESTER_EMAIL_DELAY_SECONDS)) : 300,
     staffDelaySeconds: env.STAFF_EMAIL_DELAY_SECONDS !== undefined && env.STAFF_EMAIL_DELAY_SECONDS.trim() !== "" && Number.isFinite(Number(env.STAFF_EMAIL_DELAY_SECONDS)) ? Math.max(0, Number(env.STAFF_EMAIL_DELAY_SECONDS)) : 120,
   },
 

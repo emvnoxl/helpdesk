@@ -40,7 +40,7 @@ services:
     environment:
       APP_DOMAIN: ${APP_DOMAIN:-}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./${CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro   # Caddyfile.internal for an office-only server (see .env.example)
       - caddy-data:/data      # the certificate: keep it, or the certificate is re-requested on every rebuild
       - caddy-config:/config
 

@@ -5,6 +5,7 @@ import { changed, online, signal } from "./bus";
 import { config } from "./config";
 import { db } from "./db";
 import { notifyStaff, notifyUser } from "./notifications";
+import { teamsNotify } from "./teams";
 
 /* Voice calls and screen sharing on a ticket (WebRTC). The sound and the picture travel directly between the two browsers over the
    office network; this server only introduces them: who is ringing whom, the two session descriptions (offer and answer, each with
@@ -276,6 +277,7 @@ callRoutes.post("/:id{[0-9]+}/call-request", async (c) => {
     db.prepare("INSERT INTO ticket_events (ticket_id, actor_id, field, old_value, new_value, notified, created_at) VALUES (?, ?, 'call_request', ?, 'asked', 1, ?)").bind(id, user.id, note || null, ts),
     owner ? notifyUser(owner.id, id, "call_request", title, text, ts) : notifyStaff(id, "call_request", title, text, ts, user.id),
   ]);
+  teamsNotify("call_request", { ticketId: id, title: `${user.name} asked for a call on ${t.ref}`, text: note || t.title });
   await audit(c, "call.request", "ticket", `${t.ref}: asked for a call`, { ticketId: id });
   changed(id);
   return c.json({ ok: true, call_request: await pendingRequest(id) }, 201);

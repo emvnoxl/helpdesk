@@ -13,10 +13,12 @@ export function UpdateNotice() {
 
   useEffect(() => { initSystem(); }, []);
   useEffect(() => {
-    if (!s.maintenance) return;
+    if (!s.maintenance && !s.announcement?.until) return;
     const t = window.setInterval(() => setNow(Date.now()), 15_000);
     return () => window.clearInterval(t);
-  }, [s.maintenance]);
+  }, [s.maintenance, s.announcement?.until]);
+  // IT's banner (an outage, a warning, a notice) hides itself when its time is up, even if no message arrives to say so.
+  const ann = s.announcement && (!s.announcement.until || now / 1000 < s.announcement.until) ? s.announcement : null;
 
   // The office display has nobody to press "Reload": it reloads itself shortly after an update.
   useEffect(() => {
@@ -27,16 +29,25 @@ export function UpdateNotice() {
 
   // The banner sits above the page and pushes it down (it does not cover the header). Screens that size themselves to the window
   // (the ticket page) re-measure on "resize".
-  const visible = s.restarting || stale || !!s.maintenance;
+  const visible = s.restarting || stale || !!s.maintenance || !!ann;
   useEffect(() => { window.dispatchEvent(new Event("resize")); }, [visible]);
 
   if (s.restarting) return <Restarting />;
 
   const m = s.maintenance;
-  if (!stale && !m) return null;
+  if (!stale && !m && !ann) return null;
   const left = m ? Math.round((m.at - now) / 60_000) : 0;
+  const style = ann?.level === "outage" ? { background: "#d92b33", color: "#fff" } : ann?.level === "warn" ? { background: "#ffb400", color: "#0b0b0b" } : { background: "#0b0b0b", color: "#fff" };
   return (
-    <div role="status" className="relative z-[90] flex flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 py-2 text-center text-sm font-semibold"
+    <>
+    {ann && (
+      <div role={ann.level === "outage" ? "alert" : "status"} className="relative z-[89] flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-2 text-center text-sm font-semibold" style={style}>
+        <span aria-hidden>{ann.level === "outage" ? "⚠️" : ann.level === "warn" ? "🟡" : "📣"}</span>
+        <span>{ann.text}</span>
+        <span className="text-xs font-normal opacity-80">{ann.by} · {clock(ann.at * 1000)}</span>
+      </div>
+    )}
+    {(stale || m) && <div role="status" className="relative z-[90] flex flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 py-2 text-center text-sm font-semibold"
       style={{ background: stale ? "#00a859" : "#ffb400", color: "#0b0b0b" }}>
       {stale ? (
         <>
@@ -49,7 +60,8 @@ export function UpdateNotice() {
           {" "}It will be unavailable for a minute: save what you are typing.{m!.message ? ` ${m!.message}` : ""}
         </span>
       )}
-    </div>
+    </div>}
+    </>
   );
 }
 

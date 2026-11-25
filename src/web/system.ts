@@ -10,20 +10,22 @@ export interface SystemState {
   version: string | null;
   restarting: boolean;
   maintenance: { at: number; message: string } | null;
+  announcement: { text: string; level: "info" | "warn" | "outage"; at: number; by: string; until: number | null } | null;
 }
 
-let state: SystemState = { loaded: null, version: null, restarting: false, maintenance: null };
+let state: SystemState = { loaded: null, version: null, restarting: false, maintenance: null, announcement: null };
 const listeners = new Set<() => void>();
 const set = (next: Partial<SystemState>) => { state = { ...state, ...next }; listeners.forEach((l) => l()); };
 
 /** From the stream or /api/config. */
-export function applySystem(s: { version?: string; restarting?: boolean; maintenance?: SystemState["maintenance"] } | undefined) {
+export function applySystem(s: { version?: string; restarting?: boolean; maintenance?: SystemState["maintenance"]; announcement?: SystemState["announcement"] } | undefined) {
   if (!s || typeof s.version !== "string") return;
   set({
     version: s.version,
     loaded: state.loaded ?? s.version,
     restarting: !!s.restarting,
     maintenance: s.maintenance ?? null,
+    announcement: s.announcement ?? null,
   });
 }
 

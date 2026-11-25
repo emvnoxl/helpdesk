@@ -106,6 +106,21 @@ line for every call (who called, how long, or that it was missed) and the activi
 The easy way is the built-in Caddy (next section). Or put nginx, Caddy or Traefik in front yourself. Then in `.env` set `APP_URL=https://helpdesk.yourcompany.com` and
 `TRUST_PROXY=1`. (Staff sessions use `Secure` cookies once `APP_URL` is https.)
 
+### Alerts in Microsoft Teams, automation and request forms
+All three are set up in the admin pages, no `.env` needed:
+- **Teams:** System > Alerts. In Teams open the channel > *More options* > **Workflows** > "Post to a channel when a webhook request is received", copy the address it gives you, paste it there, choose what to post (new tickets, missed targets, call requests, "not fixed"), and press **Send a test message**.
+- **Automation:** System > Automation. Close tickets automatically a few days after they are resolved (a requester who writes back reopens theirs).
+- **Request forms:** Library > Request forms. The questions shown when someone picks a category ("Which printer?", "Where are you?"). Four starter forms are added the first time; edit or clear them as you like.
+
+### HTTPS inside the office (a NAS with no public address)
+Calls, screen sharing and Microsoft sign-in want `https://`. A free public certificate needs a name the internet can reach, which an office-only NAS is not. Instead Caddy can make its **own** certificate:
+1. **A name for the NAS:** in your office DNS add a record such as `helpdesk.fortressghana.com` pointing at the NAS's fixed IP (and nothing outside the office).
+2. **In `.env`:** `APP_DOMAIN=helpdesk.fortressghana.com`, `APP_URL=https://helpdesk.fortressghana.com`, `TRUST_PROXY=1`, `HOST_BIND=127.0.0.1` and `CADDYFILE=Caddyfile.internal`.
+3. **Start it:** `docker compose --profile https up -d --build`. Open `https://helpdesk.fortressghana.com`: the browser warns the first time, because it does not know Caddy's certificate yet.
+4. **Make every PC trust it once:** get the root certificate with `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root.crt`, then install `caddy-root.crt` under *Trusted Root Certification Authorities* (double-click it, Local Machine). On a Windows domain or Intune, push it to all PCs so nobody has to do it by hand.
+5. **Afterwards:** the padlock is green, calls and screen sharing work, and Microsoft sign-in can use the `https://` address.
+If you later have a public name, set `CADDYFILE=Caddyfile` and Caddy gets a normal free certificate instead.
+
 ### Hosting on a VPS (for example Hostinger)
 A shared "web hosting" plan (WordPress, PHP, Node web apps) **cannot run this**: it needs Docker, which means a **VPS**. Your WordPress site stays where it is; the helpdesk gets
 its own name, such as `helpdesk.fortressghana.com`, pointing at the VPS. The smallest VPS plan is plenty (one process, one SQLite file).
