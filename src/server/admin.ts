@@ -14,6 +14,9 @@ import { dashboard } from "./dashboard";
 import { system } from "./system";
 import { backups } from "./backup";
 import { hashPassword, randomPassword } from "./security";
+import { unlink } from "node:fs/promises";
+import path from "node:path";
+import { config } from "./config";
 
 /* Admin-only API (/api/admin). A signed-in agent gets a plain 404, exactly as if none of this existed. */
 export const admin = new Hono<AppEnv>();
@@ -24,6 +27,8 @@ const OPEN = "status NOT IN ('resolved','closed')";
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Replies written by someone who is later deleted stay on the ticket, attributed to this placeholder (it can never sign in).
 const FORMER = "former.team.member@helpdesk.invalid";
+// The same for a deleted client: their tickets can stay (for the history and the reports) under this placeholder.
+const FORMER_USER = "former.user@helpdesk.invalid";
 
 // The full IT live board (office display and admin portal only).
 admin.route("/board", dashboard);
@@ -235,10 +240,10 @@ admin.get("/people", async (c) => {
               (SELECT COUNT(*) FROM tickets t WHERE t.requester_id = users.id) AS tickets,
               (SELECT COUNT(*) FROM devices d WHERE d.user_id = users.id) AS computers,
               (SELECT COUNT(*) FROM devices d WHERE d.user_id = users.id AND d.hardware IS NOT NULL) AS reported
-       FROM users WHERE role = 'requester' AND email != ? ${q ? "AND (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')" : ""}
+       FROM users WHERE role = 'requester' AND email NOT IN (?, ?) ${q ? "AND (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\')" : ""}
        ORDER BY COALESCE(last_login_at, created_at) DESC LIMIT 100`,
     )
-    .bind(FORMER, ...(q ? [like, like] : []))
+    .bind(FORMER, FORMER_USER, ...(q ? [like, like] : []))
     .all();
   return c.json(results);
 });
@@ -275,6 +280,58 @@ admin.post("/people/:id{[0-9]+}/reset-pin", async (c) => {
   await db.prepare("UPDATE users SET pin_hash = NULL, session_version = session_version + 1, failed_attempts = 0, locked_until = 0 WHERE id = ?").bind(id).run();
   await audit(c, "account.pin_reset", "account", `Cleared the PIN for ${target.name} (${target.email}); they were signed out everywhere`);
   return c.json({ ok: true });
+});
+
+// Disable or re-enable a client (normal user). A disabled person cannot sign in (PIN, Microsoft or email), is signed out at once and gets no
+// emails; their tickets and history stay exactly as they are. Staff accounts are managed under Staff, never here.
+admin.post("/people/:id{[0-9]+}/active", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  if (typeof body.active !== "boolean") return c.json({ error: "active must be true or false" }, 400);
+  const target = await db.prepare("SELECT id, name, email, active FROM users WHERE id = ? AND role = 'requester' AND email NOT IN (?, ?)").bind(id, FORMER, FORMER_USER).first<{ id: number; name: string; email: string; active: number }>();
+  if (!target) return c.json({ error: "not found" }, 404);
+  await db.prepare("UPDATE users SET active = ?, session_version = session_version + 1, failed_attempts = 0, locked_until = 0 WHERE id = ?").bind(body.active ? 1 : 0, id).run();
+  await audit(c, body.active ? "account.enabled" : "account.disabled", "account", `${body.active ? "Re-enabled" : "Disabled"} the account of ${target.name} (${target.email})${body.active ? "" : "; they were signed out everywhere"}`);
+  changed();
+  return c.json({ ok: true, active: body.active });
+});
+
+// Permanently delete a client. ?tickets=keep (default): their tickets stay for the history and reports, shown as "Former user".
+// ?tickets=delete: their tickets, messages and files go too. Either way the account, computers, notifications and sign-ins are gone,
+// and the activity log keeps its lines (it holds no message text). Staff accounts are not touched by this route.
+admin.delete("/people/:id{[0-9]+}", async (c) => {
+  const id = Number(c.req.param("id"));
+  const mode = c.req.query("tickets") === "delete" ? "delete" : "keep";
+  const target = await db.prepare("SELECT id, name, email FROM users WHERE id = ? AND role = 'requester' AND email NOT IN (?, ?)").bind(id, FORMER, FORMER_USER).first<{ id: number; name: string; email: string }>();
+  if (!target) return c.json({ error: "not found" }, 404);
+  const own = (await db.prepare("SELECT COUNT(*) AS n FROM tickets WHERE requester_id = ?").bind(id).first<{ n: number }>())?.n ?? 0;
+
+  let files: string[] = [];
+  if (mode === "delete") {
+    const { results } = await db.prepare("SELECT stored FROM attachments WHERE ticket_id IN (SELECT id FROM tickets WHERE requester_id = ?)").bind(id).all<{ stored: string }>();
+    files = results.map((r) => r.stored);
+    await db.batch([
+      db.prepare("DELETE FROM tickets WHERE requester_id = ?").bind(id), // comments, events, attachments rows, steps and notifications go with them
+      db.prepare("DELETE FROM attachments WHERE uploader_id = ? AND scope = 'draft'").bind(id),
+      db.prepare("DELETE FROM kb_votes WHERE user_id = ?").bind(id),
+      db.prepare("DELETE FROM users WHERE id = ?").bind(id), // devices and notifications cascade
+    ]);
+  } else {
+    await db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES (?, 'Former user', 'requester', 0)").bind(FORMER_USER).run();
+    const ghost = await db.prepare("SELECT id FROM users WHERE email = ?").bind(FORMER_USER).first<{ id: number }>();
+    await db.batch([
+      db.prepare("UPDATE tickets SET requester_id = ? WHERE requester_id = ?").bind(ghost!.id, id),
+      db.prepare("UPDATE comments SET author_id = ? WHERE author_id = ?").bind(ghost!.id, id),
+      db.prepare("UPDATE ticket_events SET actor_id = NULL WHERE actor_id = ?").bind(id),
+      db.prepare("UPDATE tickets SET device_id = NULL WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?)").bind(id),
+      db.prepare("DELETE FROM kb_votes WHERE user_id = ?").bind(id),
+      db.prepare("DELETE FROM users WHERE id = ?").bind(id),
+    ]);
+  }
+  for (const f of files) await unlink(path.join(config.dataDir, "uploads", f)).catch(() => {});
+  await audit(c, "account.client_deleted", "account", `Deleted the account of ${target.name} (${target.email}); ${own ? (mode === "delete" ? `their ${own} ticket${own === 1 ? "" : "s"} were deleted too` : `their ${own} ticket${own === 1 ? "" : "s"} were kept as "Former user"`) : "they had no tickets"}`);
+  changed();
+  return c.json({ ok: true, mode, tickets: own });
 });
 
 admin.get("/insights", async (c) => {

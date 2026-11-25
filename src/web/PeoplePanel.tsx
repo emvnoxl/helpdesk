@@ -59,11 +59,47 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
     }
   }
 
+  async function setActive(p: Person, active: boolean) {
+    if (!active) {
+      const yes = await confirm({
+        title: `Disable ${p.name}?`,
+        body: `${p.name} is signed out everywhere and cannot sign in again until you re-enable them. They get no more emails. Their tickets and history stay as they are.`,
+        confirmLabel: "Disable",
+        tone: "danger",
+      });
+      if (!yes) return;
+    }
+    try {
+      await api(`/admin/people/${p.id}/active`, { method: "POST", json: { active } });
+      toast(active ? `${p.name} can sign in again.` : `${p.name} is disabled and signed out.`, "success", active ? "Re-enabled" : "Disabled");
+      await load();
+    } catch (e) {
+      toast((e as Error).message, "error", "Couldn't change the account");
+    }
+  }
+
+  const [removing, setRemoving] = useState<Person | null>(null);
+  const [keep, setKeep] = useState(true);
+  const [busyDel, setBusyDel] = useState(false);
+  async function remove() {
+    if (!removing) return;
+    setBusyDel(true);
+    try {
+      const r = await api<{ tickets: number }>(`/admin/people/${removing.id}?tickets=${keep ? "keep" : "delete"}`, { method: "DELETE" });
+      toast(`${removing.name} was deleted${r.tickets ? (keep ? `; ${r.tickets} ticket${r.tickets === 1 ? "" : "s"} kept as "Former user".` : `, with ${r.tickets} ticket${r.tickets === 1 ? "" : "s"}.`) : "."}`, "success", "Account deleted");
+      setRemoving(null);
+      await load();
+    } catch (e) {
+      toast((e as Error).message, "error", "Couldn't delete the account");
+    }
+    setBusyDel(false);
+  }
+
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-extrabold">People</h2>
-        <p className="text-sm text-neutral-500">Everyone who has used the helpdesk as a normal user. If someone forgets their PIN, reset it here.</p>
+        <p className="text-sm text-neutral-500">Everyone who has used the helpdesk as a normal user. Reset a forgotten PIN, disable someone who should no longer have access, or delete an account.</p>
       </div>
       <input className={field + " !w-full sm:!w-80"} type="search" placeholder="Search by name or email…" aria-label="Search people" value={q} onChange={(e) => setQ(e.target.value)} />
       {err && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>}
@@ -78,7 +114,7 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
             {rows?.map((p) => (
               <Fragment key={p.id}>
                 <tr className="border-t border-stone-200">
-                  <td className="p-3 font-medium">{p.name}</td>
+                  <td className="p-3 font-medium">{p.name}{!p.active && <span className="ml-2 rounded-full bg-[#d92b33] px-2 py-0.5 text-xs font-bold text-white">Disabled</span>}</td>
                   <td className="text-neutral-600">{p.email}</td>
                   <td>{p.has_pin ? <span className="rounded-full bg-brand-green px-2 py-0.5 text-xs font-bold text-ink">Set</span> : <span className="rounded-full bg-brand-amber px-2 py-0.5 text-xs font-bold text-ink" title="Not set yet: the next person to sign in with this email will create it">Not set</span>}</td>
                   <td>
@@ -91,7 +127,11 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
                   <td>{p.tickets}</td>
                   <td className="text-neutral-600">{when(p.last_login_at)}</td>
                   <td className="pr-3 text-right">
-                    <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.has_pin} onClick={() => void reset(p)}>Reset PIN</button>
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.has_pin} onClick={() => void reset(p)}>Reset PIN</button>
+                      <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100" onClick={() => void setActive(p, !p.active)}>{p.active ? "Disable" : "Enable"}</button>
+                      <button className="rounded-lg border border-red-700/50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-700/10" onClick={() => { setKeep(true); setRemoving(p); }}>Delete</button>
+                    </div>
                   </td>
                 </tr>
                 {openId === p.id && (
@@ -117,6 +157,34 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
           </tbody>
         </table>
       </div>
+
+      {removing && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label={`Delete ${removing.name}`} onKeyDown={(e) => e.key === "Escape" && setRemoving(null)}>
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-stone-200 bg-surface text-fg shadow-2xl" style={{ borderTop: "5px solid #d92b33" }}>
+            <div className="space-y-3 p-5">
+              <h3 className="text-lg font-extrabold">Delete {removing.name}?</h3>
+              <p className="text-sm text-neutral-600 dark:text-neutral-400">This removes the account ({removing.email}), their computers and their sign-ins for good. It cannot be undone. {removing.tickets ? `They have ${removing.tickets} ticket${removing.tickets === 1 ? "" : "s"}:` : "They have no tickets."}</p>
+              {removing.tickets > 0 && (
+                <div className="space-y-2">
+                  <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm ${keep ? "border-brand-green bg-brand-green/10" : "border-stone-300"}`}>
+                    <input type="radio" name="tk" className="mt-1 accent-[#00a859]" checked={keep} onChange={() => setKeep(true)} />
+                    <span><b>Keep their tickets</b> for the history and reports. They show as "Former user".</span>
+                  </label>
+                  <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm ${!keep ? "border-[#d92b33] bg-[#d92b33]/10" : "border-stone-300"}`}>
+                    <input type="radio" name="tk" className="mt-1 accent-[#d92b33]" checked={!keep} onChange={() => setKeep(false)} />
+                    <span><b>Delete their tickets too</b>, with every message and file.</span>
+                  </label>
+                </div>
+              )}
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">To just stop someone signing in, use Disable instead: nothing is lost and you can turn it back on.</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-stone-200 bg-fg/5 px-5 py-3">
+              <button className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-fg/10" onClick={() => setRemoving(null)} autoFocus>Cancel</button>
+              <button className="rounded-lg bg-[#d92b33] px-4 py-2 text-sm font-bold text-white disabled:opacity-50" disabled={busyDel} onClick={() => void remove()}>{busyDel ? "Deleting…" : "Delete account"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

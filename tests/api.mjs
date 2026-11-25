@@ -1706,6 +1706,48 @@ const ST = "/api/staff/tickets";
   ok("updates: the token is not in the activity log", !dbq("select group_concat(summary) s from audit_log")[0].s.includes("ghp_pretend_token"));
 }
 
+{ // Admin: disable and delete clients
+  const mk = async (n, pin) => { const j = jar(); const r = await req("POST", "/api/identify", { name: n + " Test", email: n.toLowerCase() + "@" + DOMAIN, new_pin: pin }, j); return { j, r, email: n.toLowerCase() + "@" + DOMAIN, pin }; };
+  const uid = (e) => dbq("select id from users where email = ?", e)[0]?.id;
+  const P1 = await mk("Disable", "639258");
+  const t1 = (await req("POST", "/api/tickets", { title: "Client one ticket", description: "keep me", category_id: 5 }, P1.j)).json;
+  const id1 = uid(P1.email);
+  ok("clients: an agent cannot disable or delete (404)", (await req("POST", "/api/admin/people/" + id1 + "/active", { active: false }, GE)).code === 404 && (await req("DELETE", "/api/admin/people/" + id1, undefined, GE)).code === 404);
+  ok("clients: staff accounts cannot be reached through the client routes", (await req("POST", "/api/admin/people/" + uid(ADMIN) + "/active", { active: false }, A)).code === 404 && (await req("DELETE", "/api/admin/people/" + uid(ADMIN), undefined, A)).code === 404);
+  ok("clients: needs true or false", (await req("POST", "/api/admin/people/" + id1 + "/active", { active: "no" }, A)).code === 400);
+  ok("clients: before disabling they are signed in", (await req("GET", "/api/me", undefined, P1.j)).code === 200);
+  let x = await req("POST", "/api/admin/people/" + id1 + "/active", { active: false }, A);
+  ok("clients: disabling works", x.code === 200 && x.json.active === false);
+  ok("clients: …they are signed out at once", (await req("GET", "/api/me", undefined, P1.j)).code === 401);
+  x = await req("POST", "/api/identify", { name: "Disable Test", email: P1.email, pin: P1.pin }, jar());
+  ok("clients: …and cannot sign in again, even with the right PIN", x.code === 403 && /disabled/i.test(x.json.error));
+  ok("clients: the list shows them as disabled, tickets untouched", (await req("GET", "/api/admin/people?q=" + P1.email, undefined, A)).json.some((p) => p.id === id1 && p.active === 0 && p.tickets === 1));
+  ok("clients: it is in the activity log", dbq("select count(*) n from audit_log where action = 'account.disabled' and summary like ?", "%" + P1.email + "%")[0].n === 1);
+  await req("POST", "/api/admin/people/" + id1 + "/active", { active: true }, A);
+  x = await req("POST", "/api/identify", { name: "Disable Test", email: P1.email, pin: P1.pin }, jar());
+  ok("clients: re-enabled, they sign in with the same PIN", x.code === 200);
+
+  // delete, keeping the tickets
+  x = await req("DELETE", "/api/admin/people/" + id1 + "?tickets=keep", undefined, A);
+  ok("clients: delete (keep tickets) works", x.code === 200 && x.json.tickets === 1, JSON.stringify(x.json));
+  ok("clients: …the account is gone and cannot sign in as before", uid(P1.email) === undefined && (await req("GET", "/api/me", undefined, P1.j)).code === 401);
+  const kept = dbq("select u.name, u.active from tickets t join users u on u.id = t.requester_id where t.id = ?", t1.id)[0];
+  ok("clients: …the ticket stays, shown as 'Former user'", kept?.name === "Former user" && kept.active === 0);
+  ok("clients: …the placeholder is not listed under People", !(await req("GET", "/api/admin/people", undefined, A)).json.some((p) => p.name === "Former user"));
+  ok("clients: …and the same address can sign up fresh", (await mk("Disable", "639258")).r.code === 200);
+
+  // delete, with the tickets
+  const P2 = await mk("Remove", "758241");
+  const t2 = (await req("POST", "/api/tickets", { title: "Client two ticket", description: "delete me", category_id: 5 }, P2.j)).json;
+  await req("POST", "/api/tickets/" + t2.id + "/comments", { body: "secret words here" }, P2.j);
+  const id2 = uid(P2.email);
+  x = await req("DELETE", "/api/admin/people/" + id2 + "?tickets=delete", undefined, A);
+  ok("clients: delete (with tickets) works", x.code === 200 && x.json.mode === "delete" && x.json.tickets === 1, JSON.stringify(x.json));
+  ok("clients: …the ticket, its messages and the account are all gone", dbq("select count(*) n from tickets where id = ?", t2.id)[0].n === 0 && dbq("select count(*) n from comments where ticket_id = ?", t2.id)[0].n === 0 && uid(P2.email) === undefined);
+  ok("clients: the activity log says what happened, without message text", dbq("select count(*) n from audit_log where action = 'account.client_deleted'")[0].n === 2 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("secret words here"));
+  ok("clients: deleting someone who is not there is a 404", (await req("DELETE", "/api/admin/people/" + id2, undefined, A)).code === 404);
+}
+
 { // Start fresh (last: it deletes everything the other checks made)
   const keepAdmins = dbq("select count(*) n from users where role = 'admin'")[0].n;
   const keepSetting = dbq("select count(*) n from settings")[0].n;
