@@ -122,7 +122,17 @@ its own name, such as `helpdesk.fortressghana.com`, pointing at the VPS. The sma
 5. **Start it:** `docker compose --profile https up -d --build`. Caddy gets the certificate by itself; open `https://helpdesk.fortressghana.com/admin`.
 6. **Then, in the admin pages:** Admin > System: set up email, **Sign in with Microsoft 365** (use this address for the redirect) and the backup folder. Until Microsoft sign-in is switched on for everyone, anyone who finds the address can register with a name and PIN, so share it only with the people testing.
 
-Updating later: `git pull && docker compose --profile https up -d --build` (people see "being updated" and come back by themselves).
+Updating later: run `./update.sh` (add `--profile https` if you use the built-in HTTPS). It does `git pull`, rebuilds with the commit as the version and restarts; people see "being updated" and come back by themselves.
+Admin > System > Updates tells you when a newer version is on GitHub (bell notification, an "Update" badge on the System tab and the list of changes). Enter the repository there; a private one needs a read-only token (Contents: read-only). The helpdesk itself never touches Docker.
+
+**One-button updates (optional).** To get an **Update now** button there, switch on the updater helper, a small separate container that alone has Docker access:
+1. The helpdesk folder on the server must be a git clone (it is if you used `git clone`).
+2. In `.env` set `UPDATER_SECRET` to any long random text, and `HELPDESK_DIR` to the full path of this folder on the server (for example `/volume1/docker/helpdesk`).
+3. Run once: `docker compose --profile updater up -d --build` (add `--profile https` too if you use it).
+4. In Admin > System > Updates, enter the GitHub repository and a read-only token (the same ones the update check uses). When an update is available, **Update now** appears.
+
+Pressing it takes a backup, then the helper runs `git pull --ff-only`, builds the new version while the old one keeps serving, and swaps only the helpdesk container (people see "being updated" for a few seconds). If the build fails nothing changes. The previous image is kept as `fortress-helpdesk:previous`; to go back: `docker tag fortress-helpdesk:previous fortress-helpdesk:latest && docker compose up -d --no-build helpdesk`.
+The helper is not published on any port and only answers the helpdesk with the secret. It can control Docker on that machine, so treat `UPDATER_SECRET` like a password. If an update changes `docker-compose.yml` or the updater, the page tells you to run `./update.sh` once.
 Backups: the nightly copies live on the VPS disk by default. Also turn on the VPS provider's snapshots/backups and download a copy now and then (Admin > System > Backups).
 Calls and screen sharing go directly between the two computers: two people in the same office connect even though the helpdesk is on a VPS elsewhere. Someone working from home or another site may need a TURN relay (`TURN_*`).
 

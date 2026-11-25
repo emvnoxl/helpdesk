@@ -8,6 +8,7 @@ import { PeoplePanel } from "./PeoplePanel";
 import { Assets } from "./Assets";
 import { SystemPanel } from "./SystemPanel";
 import { UsersPanel } from "./UsersPanel";
+import { useUpdateInfo } from "./UpdatesCard";
 import { CountUp } from "./motion";
 import { useNotify } from "./notify";
 import { useLive } from "./live";
@@ -44,6 +45,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
   const [d, setD] = useState<any>(null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<Tab>(admin ? "dashboard" : "mine");
+  const { info: upd } = useUpdateInfo(!!admin);
   const [busy, setBusy] = useState<number | null>(null);
 
   const fail = useCallback((e: unknown) => ((e as ApiError).status === 401 ? onExpired() : setErr((e as Error).message)), [onExpired]);
@@ -97,7 +99,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
     { id: "resolved", label: <>Resolved <span className={`ml-1.5 rounded-full px-2 py-0.5 text-xs ${d.resolved.length ? "bg-brand-green text-ink" : "bg-fg/10"}`}>{d.resolved.length}</span></> },
     { id: "tickets", label: "All tickets" },
     { id: "library", label: "Library" },
-    ...(admin ? [{ id: "reports" as Tab, label: "Reports" }, { id: "activity" as Tab, label: "Activity" }, { id: "people" as Tab, label: "People" }, { id: "assets" as Tab, label: "Computers" }, { id: "users" as Tab, label: "Staff" }, { id: "system" as Tab, label: "System" }] : []),
+    ...(admin ? [{ id: "reports" as Tab, label: "Reports" }, { id: "activity" as Tab, label: "Activity" }, { id: "people" as Tab, label: "People" }, { id: "assets" as Tab, label: "Computers" }, { id: "users" as Tab, label: "Staff" }, { id: "system" as Tab, label: <>System{upd?.state?.available && <span className="ml-1.5 rounded-full bg-[#ffb400] px-2 py-0.5 text-xs font-bold text-ink">Update</span>}</> }] : []),
   ];
 
   return (

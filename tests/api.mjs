@@ -23,7 +23,7 @@ const ok = (name, cond, extra = "") => { cond ? pass++ : fail++; console.log(con
 function start(extraEnv = {}) {
   const child = spawn(process.execPath, ["dist-server/index.js"], {
     cwd: REPO,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", SSO_AUTHORITY: IDP, SSO_GRAPH_URL: IDP + "/graph", STAFF_EMAIL_DELAY_SECONDS: "0", ALT_URLS: "http://helpdesk.fortress.test/", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, COMPANY_EMAIL_DOMAIN: DOMAIN, ADMIN_EMAIL: ADMIN, ADMIN_PASSWORD: BOOT_PW, MAIL_LOG_ONLY: "1", NOTIFY_INTERVAL_SECONDS: "1", NODE_ENV: "test", SSO_AUTHORITY: IDP, SSO_GRAPH_URL: IDP + "/graph", UPDATE_API_URL: IDP + "/gh", UPDATER_URL: IDP + "/updater", UPDATER_SECRET: "pretend-updater-secret-123", STAFF_EMAIL_DELAY_SECONDS: "0", ALT_URLS: "http://helpdesk.fortress.test/", LOGIN_RATE_LIMIT: "1000", INBOUND_SECRET: MAIL_SECRET, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (d) => (log += d));
@@ -63,6 +63,8 @@ import http from "node:http";
 import { createHash as sha256, randomBytes as rnd } from "node:crypto";
 const TENANT = "0a1b2c3d-0000-4000-8000-0000000000aa", CLIENT = "0a1b2c3d-0000-4000-8000-0000000000bb", CSECRET = "pretend~client.secret";
 /* next = who signs in at the pretend Microsoft; flags break one thing at a time. */
+const gh = { latest: "abc1234", seenAuth: null, calls: 0 };
+const updater = { secret: "pretend-updater-secret-123", started: [], state: "idle", down: false };
 const idp = { next: null, codes: new Map(), exchange: null, graphDown: false, badAud: false, badNonce: false, authorizeSeen: null };
 const idpServer = http.createServer(async (rq, rs) => {
   const u = new URL(rq.url, "http://idp");
@@ -94,6 +96,23 @@ const idpServer = http.createServer(async (rq, rs) => {
     if (idp.graphDown) return send(500, { error: "down" });
     const w = idp.tokenFor;
     return send(200, { displayName: w.name, mail: w.email, userPrincipalName: w.email, jobTitle: w.job ?? null, department: w.dept ?? null });
+  }
+  if (u.pathname.startsWith("/updater/")) { // pretend updater helper
+    if (updater.down) { rq.socket.destroy(); return; }
+    if (rq.headers.authorization !== "Bearer " + updater.secret) return send(401, { error: "unauthorised" });
+    if (u.pathname === "/updater/status") return send(200, { state: updater.state, step: "Building", log: ["$ git pull"], from: "aaa1111", to: "bbb2222", note: "", error: null, finished_at: null });
+    if (u.pathname === "/updater/update" && rq.method === "POST") {
+      let body = ""; for await (const ch of rq) body += ch;
+      updater.started.push(JSON.parse(body)); updater.state = "running";
+      return send(202, { started: true });
+    }
+  }
+  if (u.pathname.startsWith("/gh/repos/fortress/helpdesk/")) { // pretend GitHub
+    gh.seenAuth = rq.headers.authorization ?? null; gh.calls++;
+    if (rq.headers.authorization !== "Bearer ghp_pretend_token") return send(404, { message: "Not Found" });
+    const rest = u.pathname.slice("/gh/repos/fortress/helpdesk/".length);
+    if (rest === "commits/main") return send(200, { sha: gh.latest + "0000000000000000000000000000000", commit: { message: "Newest thing\n\nlong body", committer: { date: "2026-11-25T10:00:00Z" } } });
+    if (rest.startsWith("compare/")) return send(200, { status: "ahead", ahead_by: 2, commits: [{ commit: { message: "First change\nbody" } }, { commit: { message: "Newest thing\nbody" } }] });
   }
   send(404, {});
 });
@@ -1630,6 +1649,58 @@ const ST = "/api/staff/tickets";
   for (let n = 0; n < 17; n++) codes.push((await req("POST", "/api/staff/login", { email: `nobody${n}@${DOMAIN}`, password: "guess-guess-guess", portal: "admin" }, jar())).code);
   ok("the first 15 guesses get a normal answer (401)", codes.slice(0, 15).every((c) => c === 401), `(${[...new Set(codes.slice(0, 15))].join(",")})`);
   ok("the 16th and later are refused (429)", codes[15] === 429 && codes[16] === 429, `(${codes.slice(15).join(",")})`);
+}
+
+{ // Update check (against a pretend GitHub)
+  const U = "/api/admin/system/updates";
+  ok("updates: an agent gets 404", (await req("GET", U, undefined, GE)).code === 404);
+  let x = await req("GET", U, undefined, A);
+  ok("updates: not set up at first", x.code === 200 && x.json.repo === "" && x.json.has_token === false);
+  x = await req("POST", U + "/check", {}, A);
+  ok("updates: checking without a repository says so, no network call", /not set up/i.test(x.json.state.error ?? "") && gh.calls === 0);
+  ok("updates: a badly written repository is refused", (await req("PUT", U, { repo: "not a repo", token: "x" }, A)).code === 400);
+  const running = ((await req("GET", "/api/config")).json.system.version ?? "").replace("+", "");
+  const sha = /^[0-9a-f]{7,40}$/.test(running);
+  x = await req("PUT", U, { repo: "https://github.com/fortress/helpdesk.git", branch: "main", token: "wrong" }, A);
+  ok("updates: a wrong token shows a plain error", x.code === 200 && /refused|not found/i.test(x.json.state.error ?? ""), JSON.stringify(x.json));
+  x = await req("PUT", U, { repo: "fortress/helpdesk", token: "ghp_pretend_token" }, A);
+  ok("updates: the right token works and sends it as a Bearer header", x.json.state.error === null && gh.seenAuth === "Bearer ghp_pretend_token" && x.json.state.latest.sha === "abc1234" && x.json.state.latest.message === "Newest thing", JSON.stringify(x.json));
+  if (sha) {
+    ok("updates: a newer commit is 'available' with what changed", x.json.state.available === true && x.json.state.behind === 2 && x.json.state.changes[0] === "Newest thing" && x.json.state.changes.length === 2, JSON.stringify(x.json.state));
+    ok("updates: every admin gets one bell notification", dbq("select count(*) n from notifications where kind = 'update' and title = 'Update available'")[0].n === dbq("select count(*) n from users where role = 'admin' and active = 1")[0].n);
+    await req("POST", U + "/check", {}, A);
+    ok("updates: checking again does not notify again", dbq("select count(*) n from notifications where title = 'Update available'")[0].n === dbq("select count(*) n from users where role = 'admin' and active = 1")[0].n);
+    // One-button install, while an update is available
+    ok("install: an agent gets 404", (await req("POST", U + "/install", {}, GE)).code === 404);
+    x = await req("GET", U + "/install/status", undefined, A);
+    ok("install: the status shows the helper is reachable", x.json.enabled === true && x.json.reachable === true && x.json.job.state === "idle", JSON.stringify(x.json));
+    updater.state = "running";
+    x = await req("POST", U + "/install", {}, A);
+    ok("install: refused while the helper is already busy, and no backup is made for it", x.code === 409 && updater.started.length === 0);
+    updater.state = "idle";
+    const bk0 = dbq("select count(*) n from audit_log where action = 'backup.ok'")[0].n;
+    x = await req("POST", U + "/install", {}, A);
+    ok("install: starts, after taking a safety backup", x.code === 200 && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(x.json.backup) && dbq("select count(*) n from audit_log where action = 'backup.ok'")[0].n === bk0 + 1, JSON.stringify(x.json));
+    ok("install: the helper was asked once, with the branch and the saved token", updater.started.length === 1 && updater.started[0].branch === "main" && updater.started[0].token === "ghp_pretend_token", JSON.stringify(updater.started));
+    ok("install: it is in the activity log, without the token", dbq("select count(*) n from audit_log where action = 'system.update_install'")[0].n === 1 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("ghp_pretend_token"));
+    x = await req("POST", U + "/install", {}, A);
+    ok("install: a second press while it runs is refused", x.code === 409 && updater.started.length === 1);
+    updater.state = "idle";
+    updater.down = true;
+    x = await req("POST", U + "/install", {}, A);
+    ok("install: a helper that is not running gives a plain message", x.code === 502 && /not running/i.test(x.json.error) && updater.started.length === 1, JSON.stringify(x.json));
+    x = await req("GET", U + "/install/status", undefined, A);
+    ok("install: …and the status says so instead of failing", x.code === 200 && x.json.reachable === false && /not running/i.test(x.json.error), JSON.stringify(x.json));
+    updater.down = false;
+    gh.latest = running.slice(0, 7);
+    x = await req("POST", U + "/check", {}, A);
+    ok("updates: when the newest commit is the one running it is up to date", x.json.state.available === false && x.json.state.behind === 0 && x.json.state.changes.length === 0, JSON.stringify(x.json.state));
+  }
+  x = await req("POST", U + "/install", {}, A);
+  ok("install: nothing newer, nothing to install", x.code === 409 || !sha, JSON.stringify(x.json));
+  x = await req("GET", U, undefined, A);
+  ok("updates: the token is never sent back, only that one is saved", x.json.has_token === true && !JSON.stringify(x.json).includes("ghp_pretend_token") && !dbq("select value from settings where key = 'update_source'")[0].value.includes("ghp_pretend_token"));
+  ok("updates: the token is not in the activity log", !dbq("select group_concat(summary) s from audit_log")[0].s.includes("ghp_pretend_token"));
 }
 
 { // Start fresh (last: it deletes everything the other checks made)

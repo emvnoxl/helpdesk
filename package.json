@@ -15,7 +15,7 @@
     "serve": "node dist-server/index.js",
     "start": "npm run build && node dist-server/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build:server && node tests/api.mjs && node tests/analytics.mjs"
+    "test": "npm run build:server && node tests/api.mjs && node tests/analytics.mjs && node tests/updater.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.8",

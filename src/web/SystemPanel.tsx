@@ -3,6 +3,7 @@ import { ApiError, api } from "./api";
 import { useLive } from "./live";
 import { useNotify } from "./notify";
 import { btn } from "./ui";
+import { UpdatesCard, useUpdateInfo } from "./UpdatesCard";
 import { AddressSetup, MailSetup, secondaryBtn, SsoSetup, type Settings } from "./SystemSetup";
 
 /* Admin > System: which version is running, announce an update, backups and the health of the box. */
@@ -46,6 +47,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: React.ReactNo
 export function SystemPanel({ onExpired }: { onExpired: () => void }) {
   const { toast, confirm } = useNotify();
   const [wipeText, setWipeText] = useState("");
+  const { info: upd, reload: reloadUpd } = useUpdateInfo(true);
   const [info, setInfo] = useState<Info | null>(null);
   const [setup, setSetup] = useState<Settings | null>(null);
   const [bk, setBk] = useState<Backups | null>(null);
@@ -115,6 +117,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
         <Stat label="Database" value={size(info.db_bytes)} sub={`Uploads ${size(info.uploads_bytes)}`} />
         <Stat label="Disk" value={diskPct === null ? "Unknown" : `${diskPct}% used`} tone={diskPct !== null && diskPct > 90 ? "bad" : undefined} sub={info.disk ? `${size(info.disk.free)} free of ${size(info.disk.total)}` : undefined} />
       </div>
+      {upd && <UpdatesCard key={JSON.stringify([upd.repo, upd.state?.checked_at])} info={upd} onChange={() => void reloadUpd()} />}
       <AddressSetup key={JSON.stringify(setup.address)} s={setup} onSaved={() => void load()} />
       <SsoSetup key={JSON.stringify([setup.sso, setup.address.app_url, setup.mail.mode])} s={setup} onSaved={() => void load()} />
 

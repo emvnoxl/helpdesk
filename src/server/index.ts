@@ -27,6 +27,7 @@ import { inbound, startInbound } from "./inbound";
 import { serveWeb } from "./static";
 import { announceRestart, checkForUpdate } from "./system";
 import { startBackups } from "./backup";
+import { startUpdateChecks } from "./updates";
 import { applyStoredSettings } from "./settings";
 import { sso } from "./sso";
 import { BUILD } from "./version";
@@ -130,6 +131,7 @@ const stopSla = startSla();
 const stopRecurring = startRecurring();
 const stopInbound = startInbound();
 const stopBackups = startBackups();
+const stopUpdateChecks = startUpdateChecks();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
   console.log(`[server] Fortress Oil & Gas Helpdesk listening on http://localhost:${info.port}  (version ${BUILD.id}, data: ${config.dataDir})`);
   if (!config.companyDomain) console.warn("[server] COMPANY_EMAIL_DOMAIN is not set: normal users can use any email domain.");
@@ -143,6 +145,7 @@ function shutdown(signal: string) {
   stopRecurring();
   stopInbound();
   stopBackups();
+  stopUpdateChecks();
   // A moment for the notice to reach the browsers, then close (the live streams would otherwise hold the server open).
   setTimeout(() => {
     server.close(() => {

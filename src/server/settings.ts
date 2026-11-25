@@ -27,7 +27,7 @@ interface Stored {
 }
 
 const KEY = createHash("sha256").update("fortress-helpdesk-settings:" + sessionSecret()).digest();
-const seal = (plain: string): string => {
+export const seal = (plain: string): string => {
   if (!plain) return "";
   const iv = randomBytes(12);
   const c = createCipheriv("aes-256-gcm", KEY, iv);
@@ -35,7 +35,7 @@ const seal = (plain: string): string => {
   return "enc1:" + Buffer.concat([iv, c.getAuthTag(), enc]).toString("base64");
 };
 /** "" when it can't be read (the session secret changed): the admin is asked to enter it again. */
-const unseal = (s: string): string => {
+export const unseal = (s: string): string => {
   if (!s.startsWith("enc1:")) return "";
   try {
     const b = Buffer.from(s.slice(5), "base64");

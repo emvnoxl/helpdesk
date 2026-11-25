@@ -44,6 +44,23 @@ services:
       - caddy-data:/data      # the certificate: keep it, or the certificate is re-requested on every rebuild
       - caddy-config:/config
 
+  # One-button updates (Admin > System > Updates > "Update now"). Only started with: docker compose --profile updater up -d --build
+  # This helper has access to Docker (that is how it can rebuild the helpdesk), so it is NOT published on any port: only the helpdesk can
+  # reach it, and only with UPDATER_SECRET. It needs: UPDATER_SECRET in .env, and the folder this file is in as an ABSOLUTE path in
+  # HELPDESK_DIR (for example /volume1/docker/helpdesk). The folder must be a git clone. Leave it out and updating stays manual (./update.sh).
+  updater:
+    build: ./updater
+    image: fortress-helpdesk-updater:latest
+    container_name: fortress-helpdesk-updater
+    profiles: ["updater"]
+    restart: unless-stopped
+    environment:
+      UPDATER_SECRET: ${UPDATER_SECRET:-}
+      PROJECT_DIR: ${HELPDESK_DIR:-/project}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HELPDESK_DIR:-.}:${HELPDESK_DIR:-/project}
+
 volumes:
   helpdesk-data:
   caddy-data:

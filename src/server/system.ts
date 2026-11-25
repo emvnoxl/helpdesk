@@ -11,6 +11,7 @@ import { db } from "./db";
 import { mailInfo, sendTest } from "./notifier";
 import { settingsRoutes } from "./settings";
 import { getSetting, putSetting } from "./sla";
+import { updates } from "./updates";
 import { BUILD, STARTED_AT } from "./version";
 
 /* Updates, as people see them.
@@ -68,6 +69,7 @@ const dirBytes = (dir: string): number => {
 
 export const system = new Hono<AppEnv>();
 system.route("/settings", settingsRoutes); // the address and email setup, editable here
+system.route("/updates", updates);        // is there a newer version on GitHub?
 
 system.get("/", async (c) => {
   const file = path.join(config.dataDir, "helpdesk.db");
