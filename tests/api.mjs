@@ -1632,6 +1632,18 @@ const ST = "/api/staff/tickets";
   ok("the 16th and later are refused (429)", codes[15] === 429 && codes[16] === 429, `(${codes.slice(15).join(",")})`);
 }
 
+{ // Start fresh (last: it deletes everything the other checks made)
+  const keepAdmins = dbq("select count(*) n from users where role = 'admin'")[0].n;
+  const keepSetting = dbq("select count(*) n from settings")[0].n;
+  ok("start fresh: an agent gets 404", (await req("POST", "/api/admin/system/wipe", { confirm: "DELETE" }, GE)).code === 404);
+  ok("start fresh: needs the word DELETE", (await req("POST", "/api/admin/system/wipe", { confirm: "yes" }, A)).code === 400 && dbq("select count(*) n from tickets")[0].n > 0);
+  const w = await req("POST", "/api/admin/system/wipe", { confirm: "DELETE" }, A);
+  ok("start fresh: works and names the safety backup", w.code === 200 && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(w.json.backup), JSON.stringify(w.json));
+  ok("…tickets, messages, devices, notifications and people are gone", ["tickets", "comments", "ticket_events", "devices", "notifications", "attachments", "recurring_tickets"].every((t) => dbq(`select count(*) n from ${t}`)[0].n === 0) && dbq("select count(*) n from users where role <> 'admin'")[0].n === 0);
+  ok("…admins and settings stay", dbq("select count(*) n from users where role = 'admin'")[0].n === keepAdmins && dbq("select count(*) n from settings")[0].n >= keepSetting);
+  ok("…the admin is still signed in and the action is logged", (await req("GET", "/api/staff/me", undefined, A)).code === 200 && dbq("select count(*) n from audit_log where action = 'system.wipe'")[0].n === 1);
+}
+
 server.kill("SIGTERM");
 idpServer.close();
 console.log(`\n${pass} passed, ${fail} failed`);

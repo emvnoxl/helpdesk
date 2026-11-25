@@ -2,6 +2,10 @@
 #   1. cp .env.example .env      (then edit it: at least COMPANY_EMAIL_DOMAIN and ADMIN_EMAIL)
 #   2. docker compose up -d --build
 #   3. open http://localhost:3000        (staff: /agent and /admin)
+#
+# On a server with its own name and HTTPS (a VPS): set APP_DOMAIN, APP_URL, TRUST_PROXY=1 and HOST_BIND=127.0.0.1 in .env, then
+#   docker compose --profile https up -d --build
+# Caddy then gets and renews the certificate by itself and is the only thing reachable from outside (see README, "Hosting on a VPS").
 services:
   helpdesk:
     build:
@@ -14,12 +18,33 @@ services:
     container_name: fortress-helpdesk
     restart: unless-stopped
     ports:
-      - "${HOST_PORT:-3000}:3000"
+      # HOST_BIND=127.0.0.1 keeps the plain-http port private to the server (use that behind Caddy or another proxy).
+      - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-3000}:3000"
     env_file: .env
     volumes:
       - helpdesk-data:/data   # the database + session key. Back this up (see README).
       # Backups on another disk or a NAS share (then set BACKUP_DIR=/backups in .env). Use your own path on the left:
       # - /volume1/backups/helpdesk:/backups
 
+  # HTTPS in front of the helpdesk (only started with: docker compose --profile https up -d). Needs APP_DOMAIN pointing at this server.
+  caddy:
+    image: caddy:2-alpine
+    container_name: fortress-helpdesk-https
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      - helpdesk
+    ports:
+      - "80:80"     # certificate checks and the redirect to https
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # the certificate: keep it, or the certificate is re-requested on every rebuild
+      - caddy-config:/config
+
 volumes:
   helpdesk-data:
+  caddy-data:
+  caddy-config:

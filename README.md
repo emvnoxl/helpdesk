@@ -103,8 +103,28 @@ line for every call (who called, how long, or that it was missed) and the activi
 - Calls live in the server's memory: restarting the helpdesk ends any call in progress.
 
 ### HTTPS and a reverse proxy
-Put nginx, Caddy or Traefik in front for HTTPS. Then in `.env` set `APP_URL=https://helpdesk.yourcompany.com` and
+The easy way is the built-in Caddy (next section). Or put nginx, Caddy or Traefik in front yourself. Then in `.env` set `APP_URL=https://helpdesk.yourcompany.com` and
 `TRUST_PROXY=1`. (Staff sessions use `Secure` cookies once `APP_URL` is https.)
+
+### Hosting on a VPS (for example Hostinger)
+A shared "web hosting" plan (WordPress, PHP, Node web apps) **cannot run this**: it needs Docker, which means a **VPS**. Your WordPress site stays where it is; the helpdesk gets
+its own name, such as `helpdesk.fortressghana.com`, pointing at the VPS. The smallest VPS plan is plenty (one process, one SQLite file).
+
+1. **Get a VPS** with Ubuntu and Docker (Hostinger's "Ubuntu with Docker" template, or install Docker yourself).
+2. **DNS:** in the domain's DNS zone add an **A record** `helpdesk` pointing at the VPS's IP address. Do **not** create a website for that subdomain in the hosting panel: that would point it at the WordPress hosting. Wait until it resolves (`nslookup helpdesk.fortressghana.com`).
+3. **Firewall:** allow only 22 (SSH), 80 and 443. Do not open 3000.
+4. **Get the code and configure it** (over SSH):
+   ```bash
+   git clone https://github.com/emvnoxl/helpdesk.git && cd helpdesk     # a private repo asks for a GitHub token or deploy key
+   cp .env.example .env && nano .env
+   ```
+   Set `COMPANY_EMAIL_DOMAIN`, `ADMIN_EMAIL`, and: `APP_DOMAIN=helpdesk.fortressghana.com`, `APP_URL=https://helpdesk.fortressghana.com`, `TRUST_PROXY=1`, `HOST_BIND=127.0.0.1`.
+5. **Start it:** `docker compose --profile https up -d --build`. Caddy gets the certificate by itself; open `https://helpdesk.fortressghana.com/admin`.
+6. **Then, in the admin pages:** Admin > System: set up email, **Sign in with Microsoft 365** (use this address for the redirect) and the backup folder. Until Microsoft sign-in is switched on for everyone, anyone who finds the address can register with a name and PIN, so share it only with the people testing.
+
+Updating later: `git pull && docker compose --profile https up -d --build` (people see "being updated" and come back by themselves).
+Backups: the nightly copies live on the VPS disk by default. Also turn on the VPS provider's snapshots/backups and download a copy now and then (Admin > System > Backups).
+Calls and screen sharing go directly between the two computers: two people in the same office connect even though the helpdesk is on a VPS elsewhere. Someone working from home or another site may need a TURN relay (`TURN_*`).
 
 ### Backups
 Everything lives in the `helpdesk-data` volume (`/data`): `helpdesk.db` (tickets, users), `uploads/` (attached files) and `session.secret`.

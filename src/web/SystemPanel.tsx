@@ -44,7 +44,8 @@ function Stat({ label, value, sub, tone }: { label: string; value: React.ReactNo
 }
 
 export function SystemPanel({ onExpired }: { onExpired: () => void }) {
-  const { toast } = useNotify();
+  const { toast, confirm } = useNotify();
+  const [wipeText, setWipeText] = useState("");
   const [info, setInfo] = useState<Info | null>(null);
   const [setup, setSetup] = useState<Settings | null>(null);
   const [bk, setBk] = useState<Backups | null>(null);
@@ -84,6 +85,19 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
     setBusy(true);
     try { const r = await api<Status>("/admin/backups/run", { method: "POST" }); toast(`${r.file} (${size(r.bytes ?? 0)})`, "success", "Backup done"); }
     catch (e) { toast((e as Error).message, "error", "Backup failed"); }
+    await load();
+    setBusy(false);
+  };
+
+  const wipe = async () => {
+    const ok = await confirm({ title: "Delete all tickets, people and computers?", body: "A backup is taken first. Only admin accounts and your settings are kept. Everyone else signs in fresh.", confirmLabel: "Delete everything", tone: "danger" });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const r = await api<{ backup: string; removed: Record<string, number> }>("/admin/system/wipe", { method: "POST", json: { confirm: "DELETE" } });
+      toast(`${r.removed.tickets} tickets and ${r.removed.users} people removed. Backup: ${r.backup}`, "success", "Started fresh");
+      setWipeText("");
+    } catch (e) { toast((e as Error).message, "error", "Nothing was deleted"); }
     await load();
     setBusy(false);
   };
@@ -198,6 +212,17 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
             <li>Start it again: <code className="rounded bg-fg/10 px-1">docker compose start helpdesk</code></li>
           </ol>
         </details>
+      </section>
+      <section className="rounded-2xl border border-[#d92b33]/40 bg-surface p-5">
+        <h2 className="text-base font-bold text-fg">Start fresh</h2>
+        <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-400">
+          Deletes every ticket, message, attachment, computer, notification, the activity log, recurring tickets, and every person except the admins.
+          Keeps your settings (address, email, Microsoft 365), help articles, saved replies, checklists and admin accounts. A backup is taken first, so it can be undone by restoring it.
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <input className="w-48 rounded-lg border border-fg/20 bg-surface px-3 py-2 text-sm text-fg placeholder:text-neutral-500" placeholder="Type DELETE" value={wipeText} onChange={(e) => setWipeText(e.target.value)} aria-label="Type DELETE to enable the button" autoComplete="off" />
+          <button className="rounded-lg bg-[#d92b33] px-4 py-2 text-sm font-bold text-white disabled:opacity-40" disabled={busy || wipeText !== "DELETE"} onClick={() => void wipe()}>Delete all data</button>
+        </div>
       </section>
       {err && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>}
     </div>

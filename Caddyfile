@@ -1,0 +1,8 @@
+# HTTPS for the helpdesk. Used by docker-compose.yml's "https" profile; APP_DOMAIN comes from .env (for example helpdesk.fortressghana.com).
+# Caddy gets a free certificate for that name by itself and renews it. The name must already point at this server (an A record).
+{$APP_DOMAIN} {
+	# The helpdesk compresses its own answers. flush_interval -1 sends the live-update stream (Server-Sent Events) straight through.
+	reverse_proxy helpdesk:3000 {
+		flush_interval -1
+	}
+}

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { statfs } from "node:fs/promises";
-import { readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { runBackup } from "./backup";
 import path from "node:path";
 import { type AppEnv } from "./auth";
 import { audit, SYSTEM } from "./audit";
@@ -106,6 +107,31 @@ system.post("/test-email", async (c) => {
     await audit(c, "system.test_email_failed", "admin", `Test email to ${to} failed: ${(e as Error).message}`);
     return c.json({ error: (e as Error).message }, 502);
   }
+});
+
+// { confirm: "DELETE" }: clears tickets, people, computers and history; keeps settings, help articles, templates and every admin.
+// A backup is taken first and nothing is touched if it fails. Meant for the end of a trial period.
+const WIPE_TABLES = ["ticket_tasks", "attachments", "comments", "ticket_events", "tickets", "notifications", "audit_log", "devices", "kb_votes", "inbound_mail", "recurring_tickets"];
+system.post("/wipe", async (c) => {
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  if (body.confirm !== "DELETE") return c.json({ error: "Type DELETE to confirm." }, 400);
+  const me = c.get("user");
+  const backup = await runBackup("manual", { id: me.id, name: me.name, role: me.role });
+  if (!backup.ok) return c.json({ error: `Nothing was deleted: the safety backup failed (${backup.error}).` }, 500);
+  const removed: Record<string, number> = {};
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const t of WIPE_TABLES) removed[t] = Number(db.raw.prepare(`DELETE FROM ${t}`).run().changes);
+    removed.users = Number(db.raw.prepare("DELETE FROM users WHERE role <> 'admin'").run().changes);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    return c.json({ error: `Nothing was deleted: ${(e as Error).message}` }, 500);
+  }
+  try { rmSync(path.join(config.dataDir, "uploads"), { recursive: true, force: true }); mkdirSync(path.join(config.dataDir, "uploads"), { recursive: true }); } catch { /* the rows are gone; stray files are harmless */ }
+  await audit(c, "system.wipe", "admin", `Cleared all tickets, people and computers (${removed.tickets} tickets, ${removed.users} people). Safety backup: ${backup.file}`);
+  changed();
+  return c.json({ ok: true, removed, backup: backup.file });
 });
 
 // { minutes: 1..240, message? }: banner on every open screen.
