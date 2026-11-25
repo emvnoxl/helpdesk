@@ -1249,6 +1249,9 @@ const ST = "/api/staff/tickets";
   // the requester gets a confirmation for a ticket raised on the web
   const tk = (await req("POST", "/api/tickets", { title: "Mailtest monitor flicker", description: "The screen flickers", category_id: 5 }, RQ)).json;
   ok("a requester is emailed that their web ticket was received", await waitLog(new RegExp("\\[mail\\] to=" + esc(meR.email) + " subject=\"\\[" + tk.ref + "\\] Mailtest monitor flicker\" :: [^\\n]*Hi Kofi,\\s+We have your ticket")), tk.ref);
+  ok("a new account is sent one professional welcome email", await waitLog(new RegExp("\\[mail\\] to=" + esc(meR.email) + " subject=\"Welcome to the Fortress Oil & Gas Helpdesk\" :: [^]*?Hi Kofi,[^]*?Raise a ticket[^]*?Kind regards")));
+  ok("…only once, and it is cleared afterwards", (log.match(new RegExp("to=" + esc(meR.email) + " subject=\"Welcome", "g")) ?? []).length === 1 && dbq("select welcome_pending p from users where email = ?", meR.email)[0].p === 0);
+  ok("…staff and accounts made from an email do not get one", !/to=esi\.agent@[^ ]+ subject="Welcome/.test(log) && !/to=kofi\.mensah@[^ ]+ subject="Welcome/.test(log) && dbq("select count(*) n from users where welcome_pending = 1 and role <> 'requester'")[0].n === 0);
   ok("the admin is emailed about the new ticket (it was unread: nobody is at the helpdesk in a test)", await waitLog(new RegExp("\\[mail\\] to=" + esc(ADMIN) + " subject=\"[^\"]*\" :: (?:(?!\\[mail\\])[^])*New ticket " + tk.ref + "[:\\n]"), 8000), (log.match(/\[mail\] to=admin@[^\n]*/g) ?? []).slice(-3).join(" | "));
   ok("every email is branded plain text too (name and footer)", /Fortress Oil & Gas Helpdesk\nYou get these emails because of a ticket you raised/.test(log));
 

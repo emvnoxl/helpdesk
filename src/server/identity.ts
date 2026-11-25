@@ -93,7 +93,7 @@ identity.post("/identify", async (c) => {
       version = existing.session_version;
       await db.prepare("UPDATE users SET pin_hash = ?, failed_attempts = 0, locked_until = 0, name = CASE WHEN role = 'requester' THEN ? ELSE name END WHERE id = ?").bind(hash, name, id).run();
     } else {
-      const row = await db.prepare("INSERT INTO users (email, name, role, pin_hash) VALUES (?, ?, 'requester', ?) RETURNING id").bind(email, name, hash).first<{ id: number }>();
+      const row = await db.prepare("INSERT INTO users (email, name, role, pin_hash, welcome_pending) VALUES (?, ?, 'requester', ?, 1) RETURNING id").bind(email, name, hash).first<{ id: number }>();
       id = row!.id;
       created = true;
     }

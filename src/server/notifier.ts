@@ -105,6 +105,29 @@ export function composeRequester(e: Pending): Mail {
   return { to: e.to_email, subject: `[${e.ref}] ${e.title}`, html, text };
 }
 
+/** The one-time welcome for someone who has just created their account. */
+export function composeWelcome(u: { name: string; email: string }): Mail {
+  const first = u.name.split(" ")[0] || "there";
+  const step = (lead: string, rest: string): Block => ({
+    html: `<p style="margin:0 0 10px;padding-left:14px;border-left:3px solid #00a859;line-height:1.5;font-size:14px"><b>${esc(lead)}</b><br><span style="color:#3a3a36">${esc(rest)}</span></p>`,
+    text: `- ${lead}: ${rest}`,
+  });
+  const blocks: Block[] = [
+    para(`Hi ${first},`),
+    para("Welcome to the ", { b: "Fortress Oil & Gas Helpdesk" }, ". Your account is ready, and IT is here to help you get back to work quickly."),
+    para("Here is how it works:"),
+    step("Raise a ticket", "Describe the problem in a few words and add a screenshot if you can. It takes less than a minute."),
+    step("Follow it", "My queue shows where your ticket sits in line, and the Live board shows what IT is working on right now."),
+    step("Stay informed", "You will get an email when your ticket is picked up, answered or resolved. You can also chat with IT on the ticket itself."),
+    step("Try the Help pages first", "Short guides for common problems (Wi-Fi, printing, passwords, Microsoft 365) are there if you would like to fix something yourself."),
+    step("Share your computer's details", "Under Account > This computer you can send IT your computer's specifications once, so problems are solved faster."),
+  ];
+  if (config.appUrl) blocks.push(button("Open the helpdesk", config.appUrl));
+  blocks.push(para("Kind regards,"), para({ b: "IT Support" }, ", Fortress Oil & Gas"));
+  const { html, text } = shell(blocks, "You are receiving this one-time message because an account was created for you on the helpdesk. You can switch off ticket emails under Your account.");
+  return { to: u.email, subject: "Welcome to the Fortress Oil & Gas Helpdesk", html, text };
+}
+
 /** One email per person per round: a single update reads like the bell, several become a short list. */
 export function composeStaff(rows: StaffRow[]): Mail {
   const r0 = rows[0]!;
@@ -128,6 +151,23 @@ export function composeStaff(rows: StaffRow[]): Mail {
 /* ---------- transports ---------- */
 type Sender = (m: Mail) => Promise<void>;
 
+/** Microsoft says why in the body ("ErrorAccessDenied", "MailboxNotEnabledForRESTAPI", "invalid_client"...): show that, with a hint for the usual ones. */
+async function graphReason(res: Response): Promise<string> {
+  let code = "", text = "";
+  try {
+    const j = (await res.json()) as { error?: string | { code?: string; message?: string }; error_description?: string };
+    code = typeof j.error === "string" ? j.error : (j.error?.code ?? "");
+    text = (typeof j.error === "string" ? j.error_description : j.error?.message) ?? "";
+  } catch { /* no body */ }
+  const hint =
+    /ErrorAccessDenied|Authorization_RequestDenied|AccessDenied/i.test(code) ? " (the app needs the Mail.Send APPLICATION permission with admin consent, and must be allowed to use that mailbox)"
+    : /MailboxNotEnabledForRESTAPI|ResourceNotFound|ErrorInvalidUser|MailboxNotFound/i.test(code) ? " (the sender mailbox does not exist or has no Exchange Online licence)"
+    : /invalid_client/i.test(code) ? " (wrong secret: use the secret VALUE, and check it has not expired)"
+    : "";
+  const detail = [code, text.split("\n")[0]].filter(Boolean).join(": ").replace(/\s+/g, " ").slice(0, 160);
+  return detail ? ` - ${detail}${hint}` : "";
+}
+
 let cachedToken: { value: string; exp: number } | undefined;
 /** The Graph credentials were changed: don't keep using a token issued for the old ones. */
 export const forgetGraphToken = () => { cachedToken = undefined; };
@@ -139,7 +179,7 @@ export async function graphToken(): Promise<string> {
       method: "POST",
       body: new URLSearchParams({ client_id: g.clientId, client_secret: g.clientSecret, scope: "https://graph.microsoft.com/.default", grant_type: "client_credentials" }),
     });
-    if (!res.ok) throw new Error(`Graph token ${res.status}`);
+    if (!res.ok) throw new Error(`Graph token ${res.status}${await graphReason(res)}`);
     const j = (await res.json()) as { access_token: string; expires_in: number };
     cachedToken = { value: j.access_token, exp: Date.now() + j.expires_in * 1000 };
   }
@@ -154,7 +194,7 @@ async function graphSender(): Promise<Sender> {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ message: { subject: m.subject, body: { contentType: "HTML", content: m.html }, toRecipients: [{ emailAddress: { address: m.to } }] }, saveToSentItems: false }),
     });
-    if (!res.ok) throw new Error(`Graph sendMail ${res.status}`);
+    if (!res.ok) throw new Error(`Graph sendMail ${res.status}${await graphReason(res)}`);
   };
 }
 
@@ -192,11 +232,12 @@ async function deliver(sender: { name: string; send: Sender }, m: Mail) {
 }
 
 export async function mailInfo() {
-  const [a, b] = await db.batch([
+  const [a, b, c] = await db.batch([
     db.prepare("SELECT COUNT(*) AS n FROM ticket_events WHERE notified = 0 AND field IN ('status','assignee','reply','created') AND created_at > unixepoch() - 86400"),
     db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE emailed = 0 AND read_at IS NULL AND created_at > unixepoch() - 86400"),
+    db.prepare("SELECT COUNT(*) AS n FROM users WHERE welcome_pending = 1 AND created_at > unixepoch() - 86400"),
   ]);
-  return { transport: pickSender()?.name ?? "off", last_ok_at: state.okAt || null, last_error: state.error || null, last_error_at: state.errorAt || null, waiting: (a.results[0]?.n ?? 0) + (b.results[0]?.n ?? 0) };
+  return { transport: pickSender()?.name ?? "off", last_ok_at: state.okAt || null, last_error: state.error || null, last_error_at: state.errorAt || null, waiting: (a.results[0]?.n ?? 0) + (b.results[0]?.n ?? 0) + (c.results[0]?.n ?? 0) };
 }
 
 /** An admin's "send me a test": the same path as the real emails, and the error (if any) comes straight back. */
@@ -233,6 +274,19 @@ async function sendRequesterEvents(sender: { name: string; send: Sender }): Prom
   for (const e of results) {
     await deliver(sender, composeRequester(e));
     await db.prepare("UPDATE ticket_events SET notified = 1 WHERE id = ?").bind(e.id).run();
+    sent++;
+  }
+  return sent;
+}
+
+async function sendWelcomes(sender: { name: string; send: Sender }): Promise<number> {
+  // Nobody to welcome: switched off, not a requester, or too late (an account from before mail was set up must not get a "welcome" days later).
+  await db.prepare("UPDATE users SET welcome_pending = 0 WHERE welcome_pending = 1 AND (email_notify = 0 OR active = 0 OR role <> 'requester' OR created_at < unixepoch() - 86400)").run();
+  const { results } = await db.prepare("SELECT id, name, email FROM users WHERE welcome_pending = 1 ORDER BY id LIMIT 25").all<{ id: number; name: string; email: string }>();
+  let sent = 0;
+  for (const u of results) {
+    await deliver(sender, composeWelcome(u));
+    await db.prepare("UPDATE users SET welcome_pending = 0 WHERE id = ?").bind(u.id).run();
     sent++;
   }
   return sent;
@@ -280,7 +334,7 @@ export async function sendPending(): Promise<number> {
   // Don't send stale news: anything over a day old is simply marked done.
   await db.prepare("UPDATE ticket_events SET notified = 1 WHERE notified = 0 AND created_at < unixepoch() - 86400").run();
   try {
-    return (await sendRequesterEvents(sender)) + (await sendStaffDigests(sender));
+    return (await sendWelcomes(sender)) + (await sendRequesterEvents(sender)) + (await sendStaffDigests(sender));
   } catch (err) {
     console.error(`[mail] ${sender.name} failed: ${(err as Error).message} (will retry)`);
     return 0; // the transport is probably down; try again on the next tick

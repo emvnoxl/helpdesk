@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
   pin_hash             TEXT,
   session_version      INTEGER NOT NULL DEFAULT 1,
   email_notify         INTEGER NOT NULL DEFAULT 1,   -- 0 = this person asked for no ticket emails
+  welcome_pending      INTEGER NOT NULL DEFAULT 0,   -- 1 = a one-time welcome email is waiting to be sent
   ms_oid               TEXT,                         -- Microsoft 365 (Entra) object id, linked at the first Microsoft sign-in
   ms_tid               TEXT,
   job_title            TEXT,

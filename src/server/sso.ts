@@ -147,7 +147,7 @@ sso.get("/callback", async (c) => {
   let created = false;
   if (!row) {
     if (portal !== "user") return bad("not_staff", `no ${portal} account for ${email}`, email);
-    const r = await db.prepare("INSERT INTO users (email, name, role, ms_oid, ms_tid, job_title, department) VALUES (?, ?, 'requester', ?, ?, ?, ?) RETURNING id").bind(email, name, claims.oid, claims.tid, job, dept).first<{ id: number }>();
+    const r = await db.prepare("INSERT INTO users (email, name, role, ms_oid, ms_tid, job_title, department, welcome_pending) VALUES (?, ?, 'requester', ?, ?, ?, ?, 1) RETURNING id").bind(email, name, claims.oid, claims.tid, job, dept).first<{ id: number }>();
     row = { id: r!.id, email, name, role: "requester", active: 1, ms_oid: claims.oid, session_version: 1, credential_version: 1, must_change_password: 0 };
     created = true;
     await audit(c, "account.registered", "account", `New account created from Microsoft 365: ${name} (${email})`, { who: { id: row.id, name, role: "requester" } });
