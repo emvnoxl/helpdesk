@@ -15,7 +15,7 @@
     "serve": "node dist-server/index.js",
     "start": "npm run build && node dist-server/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build:server && node tests/api.mjs && node tests/analytics.mjs && node tests/updater.mjs && node tests/requester-mail.mjs && node tests/chat-format.mjs && node tests/restore.mjs"
+    "test": "npm run build:server && node tests/api.mjs && node tests/analytics.mjs && node tests/updater.mjs && node tests/requester-mail.mjs && node tests/chat-format.mjs && node tests/restore.mjs && node tests/mail-templates.mjs"
   },
   "dependencies": {
     "@giphy/js-analytics": "^5.0.0",

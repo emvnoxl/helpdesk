@@ -7,6 +7,7 @@ import { UpdatesCard, useUpdateInfo } from "./UpdatesCard";
 import { ChatSetup, useGifInfo } from "./ChatSetup";
 import { TeamsSetup, useTeamsInfo } from "./TeamsSetup";
 import { AutomationSetup, useAutomationInfo } from "./AutomationSetup";
+import { EmailTemplates, useTemplatesInfo } from "./EmailTemplates";
 import { RestoreDialog, type RestoreTarget } from "./RestoreDialog";
 import { AddressSetup, MailSetup, secondaryBtn, SsoSetup, type Settings } from "./SystemSetup";
 
@@ -25,7 +26,7 @@ interface Backups {
   files: { name: string; bytes: number; at: number }[]; uploads_mirrored: boolean; inside_data: boolean;
 }
 
-type Section = "overview" | "updates" | "signin" | "email" | "alerts" | "automation" | "chat" | "address" | "backups" | "reset";
+type Section = "overview" | "updates" | "signin" | "email" | "templates" | "alerts" | "automation" | "chat" | "address" | "backups" | "reset";
 type Tone = "ok" | "warn" | "bad" | "off";
 
 const size = (n: number) => (n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB");
@@ -50,13 +51,14 @@ const ICON: Record<Section, string> = {
   email: "M3 6h18v12H3zM3 7l9 7 9-7",
   chat: "M4 5h16v11H9l-5 4V5Zm4 4h8M8 12h5",
   automation: "M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z",
+  templates: "M4 4h16v16H4zM4 9h16M9 9v11",
   alerts: "M6 9a6 6 0 1 1 12 0c0 6 2 7 2 7H4s2-1 2-7Zm4 10a2 2 0 0 0 4 0",
   address: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
   backups: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Zm0 0v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3",
   reset: "M4 12a8 8 0 1 0 3-6.2M4 4v5h5",
 };
-const TITLE: Record<Section, string> = { overview: "Overview", updates: "Updates", signin: "Sign-in", email: "Email", alerts: "Alerts", automation: "Automation", chat: "Chat", address: "Address", backups: "Backups", reset: "Start fresh" };
-const ORDER: Section[] = ["overview", "updates", "signin", "email", "alerts", "automation", "chat", "address", "backups", "reset"];
+const TITLE: Record<Section, string> = { overview: "Overview", updates: "Updates", signin: "Sign-in", email: "Email", templates: "Email templates", alerts: "Alerts", automation: "Automation", chat: "Chat", address: "Address", backups: "Backups", reset: "Start fresh" };
+const ORDER: Section[] = ["overview", "updates", "signin", "email", "templates", "alerts", "automation", "chat", "address", "backups", "reset"];
 
 const Icon = ({ d }: { d: string }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0"><path d={d} /></svg>
@@ -85,6 +87,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
   const { info: gif, load: reloadGif } = useGifInfo();
   const { info: tm, load: reloadTeams } = useTeamsInfo();
   const { info: au, load: reloadAuto } = useAutomationInfo();
+  const { info: et, load: reloadTemplates } = useTemplatesInfo();
   const [info, setInfo] = useState<Info | null>(null);
   const [setup, setSetup] = useState<Settings | null>(null);
   const [bk, setBk] = useState<Backups | null>(null);
@@ -164,6 +167,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
 
   // One line and one light per area: this is all the Overview and the left list need.
   const health: Record<Exclude<Section, "overview" | "reset">, { tone: Tone; text: string }> = {
+    templates: et ? { tone: "ok", text: `${et.templates.brand.show_logo ? "Logo and " : ""}${et.templates.brand.show_verify && et.app_url_set ? "verify link on every email" : "genuine-message block on every email"}${et.customised ? `, ${et.customised} change${et.customised === 1 ? "" : "s"} from the default` : ""}` } : { tone: "off", text: "The wording and look of your emails" },
     automation: au?.auto_close_days ? { tone: "ok", text: `Resolved tickets close after ${au.auto_close_days} day${au.auto_close_days === 1 ? "" : "s"}` } : { tone: "off", text: "Off: you close resolved tickets by hand" },
     alerts: tm?.configured ? (tm.last && !tm.last.ok ? { tone: "bad", text: "The last Teams post failed" } : { tone: "ok", text: "Posting to a Teams channel" }) : { tone: "off", text: "Not set up: IT is only told by email and the bell" },
     chat: gif?.giphy.configured ? { tone: "ok", text: `GIF search is on${gif.library.length ? `, plus ${gif.library.length} of your own` : ""}` } : gif?.library.length ? { tone: "ok", text: `${gif.library.length} of your own GIFs (no GIF search yet)` } : { tone: "off", text: "No GIFs yet: add a GIPHY key or upload your own" },
@@ -219,9 +223,9 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
         <Stat label="Database" value={size(info.db_bytes)} sub={`Uploads ${size(info.uploads_bytes)}`} />
         <Stat label="Disk" value={diskPct === null ? "Unknown" : `${diskPct}% used`} tone={diskPct !== null && diskPct > 90 ? "bad" : undefined} sub={info.disk ? `${size(info.disk.free)} free of ${size(info.disk.total)}` : undefined} />
       </div>
-      <ul className="divide-y divide-fg/10 overflow-hidden rounded-2xl border border-fg/10 bg-surface">
-        {(["updates", "signin", "email", "alerts", "automation", "chat", "address", "backups"] as const).map((s) => (
-          <li key={s}>
+      <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2 2xl:grid-cols-3">
+        {(["updates", "signin", "email", "templates", "alerts", "automation", "chat", "address", "backups"] as const).map((s) => (
+          <li key={s} className="overflow-hidden rounded-2xl border border-fg/10 bg-surface">
             <button onClick={() => go(s)} className="flex w-full items-center gap-3.5 px-5 py-4 text-left transition-colors hover:bg-fg/5 focus:outline-none focus-visible:bg-fg/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-green">
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${DOT[health[s].tone]}`} aria-hidden />
               <span className="min-w-0 flex-1">
@@ -365,6 +369,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
     updates,
     signin: <SsoSetup key={JSON.stringify([setup.sso, setup.address.app_url, setup.mail.mode])} s={setup} onSaved={() => void load()} />,
     email,
+    templates: et ? <EmailTemplates key={JSON.stringify(et.templates) + et.custom_logo} info={et} onChanged={() => void reloadTemplates()} /> : <p className="text-neutral-500">Loading…</p>,
     alerts: tm ? <TeamsSetup key={JSON.stringify([tm.configured, tm.events, tm.last?.at])} info={tm} onChanged={() => void reloadTeams()} /> : <p className="text-neutral-500">Loading…</p>,
     automation: au ? <AutomationSetup key={JSON.stringify([au.auto_close_days, au.last?.at])} info={au} onChanged={() => void reloadAuto()} /> : <p className="text-neutral-500">Loading…</p>,
     chat: gif ? <ChatSetup info={gif} onChanged={() => void reloadGif()} /> : <p className="text-neutral-500">Loading…</p>,
@@ -376,7 +381,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-8">
       {nav}
-      <div className="min-w-0 max-w-5xl">
+      <div className="min-w-0">
         <div key={section} className="page-in space-y-5">{body[section]}</div>
         {err && <p role="alert" className="mt-5 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>}
       </div>

@@ -1,6 +1,8 @@
 import nodemailer from "nodemailer";
 import { config } from "./config";
 import { db } from "./db";
+import { composeRequester as renderRequester, composeRequesterGroup as renderGroup, composeStaff as renderStaff, composeTest, composeWelcome as renderWelcome, type Mail, type Pending, type StaffRow } from "./mailrender";
+import { logoBytes, mailCtx, setMailSender } from "./mailtemplates";
 
 /* Sends the helpdesk's emails. It runs inside the server on a timer: no cron service needed.
    Transport, in order of preference: MAIL_LOG_ONLY=1 (print to the log), Microsoft Graph (if configured), SMTP (if configured).
@@ -15,161 +17,12 @@ import { db } from "./db";
    Anyone can switch their emails off (users.email_notify). Rows are marked sent only after a successful send; anything older than a day
    is dropped rather than sent late. */
 
-interface Pending {
-  id: number;
-  ticket_id: number;
-  field: string;
-  new_value: string | null;
-  ref: string;
-  title: string;
-  source: string;
-  to_email: string;
-  to_name: string;
-  new_assignee: string | null;
-  actor: string | null;
-  reply: string | null;
-}
-interface StaffRow { id: number; user_id: number; kind: string; title: string; body: string; ticket_id: number | null; ref: string | null; email: string; name: string; role: string }
-
-interface Mail {
-  to: string;
-  subject: string;
-  html: string;
-  text: string;
-}
-
-const esc = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
-const LABEL: Record<string, string> = { open: "Open", in_progress: "In progress", waiting: "Waiting for your reply", resolved: "Resolved", closed: "Closed" };
-
-/** True when replies to our emails come back into the helpdesk, so the email may say "just reply". */
-const repliesComeBack = () => !!(config.inbound.secret || (config.inbound.mailbox && config.mail.graph.tenantId));
-
-/* ---------- the look of an email ---------- */
-type Part = string | { b: string };
-interface Block { html: string; text: string }
-const para = (...parts: Part[]): Block => ({
-  html: `<p style="margin:0 0 14px;line-height:1.55;font-size:15px">${parts.map((x) => (typeof x === "string" ? esc(x) : `<b>${esc(x.b)}</b>`)).join("")}</p>`,
-  text: parts.map((x) => (typeof x === "string" ? x : x.b)).join(""),
-});
-const quote = (t: string): Block => ({
-  html: `<blockquote style="margin:0 0 14px;padding:4px 14px;border-left:3px solid #00a859;color:#2b2b2b;font-size:15px;line-height:1.55">${esc(t).replace(/\n/g, "<br>")}</blockquote>`,
-  text: t.split("\n").map((l) => "> " + l).join("\n"),
-});
-const ticketLine = (ref: string, title: string): Block => ({
-  html: `<p style="margin:0 0 18px;padding:10px 14px;background:#f4f4f1;border-radius:8px;font-size:14px"><b>${esc(ref)}</b> &nbsp;${esc(title)}</p>`,
-  text: `${ref}: ${title}`,
-});
-const button = (label: string, href: string): Block => ({
-  html: `<p style="margin:6px 0 4px"><a href="${esc(href)}" style="display:inline-block;background:#00a859;color:#0b0b0b;font-weight:700;font-size:15px;text-decoration:none;padding:11px 20px;border-radius:8px">${esc(label)}</a></p>`,
-  text: `${label}: ${href}`,
-});
-
-/** One branded wrapper for every email: the three brand colours as a stripe, the name, the content, and how to switch them off. */
-function shell(blocks: Block[], foot: string): { html: string; text: string } {
-  const html =
-    `<!doctype html><html><body style="margin:0;padding:0;background:#efefea">` +
-    `<div style="padding:24px 12px;font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#0b0b0b">` +
-    `<div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e3e3dc;border-radius:12px;overflow:hidden">` +
-    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr>` +
-    `<td height="5" width="34%" bgcolor="#00a859" style="font-size:0;line-height:0">&nbsp;</td><td height="5" width="33%" bgcolor="#ffb400" style="font-size:0;line-height:0">&nbsp;</td><td height="5" width="33%" bgcolor="#ee3239" style="font-size:0;line-height:0">&nbsp;</td></tr></table>` +
-    `<div style="padding:24px 28px 8px">` +
-    `<p style="margin:0 0 18px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#007a3d">Fortress Oil &amp; Gas Helpdesk</p>` +
-    blocks.map((b) => b.html).join("") +
-    `</div><div style="padding:14px 28px 22px;border-top:1px solid #eeeee8;font-size:12px;line-height:1.5;color:#6b6b66">${esc(foot)}</div>` +
-    `</div></div></body></html>`;
-  const text = blocks.map((b) => b.text).join("\n\n") + "\n\n--\nFortress Oil & Gas Helpdesk\n" + foot;
-  return { html, text };
-}
-
-/** A link straight to a ticket (needs APP_URL). Requesters land in the normal app, staff in their own portal. */
-const ticketUrl = (role: string, id: number) => (config.appUrl ? `${config.appUrl}${role === "admin" ? "/admin" : role === "agent" ? "/agent" : "/"}?t=${id}` : "");
-
-export function composeRequester(e: Pending): Mail {
-  const first = e.to_name.split(" ")[0] || "there";
-  const blocks: Block[] = [para(`Hi ${first},`)];
-  let button_label = "Open my ticket";
-  if (e.field === "reply") {
-    blocks.push(para({ b: e.actor ?? "IT" }, " from IT replied:"), quote(e.reply || "Sent an attachment."), para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
-    button_label = "Open the conversation";
-  } else if (e.field === "created") {
-    blocks.push(e.source === "email"
-      ? para("We have your email and raised a ticket for it.", repliesComeBack() ? " Reply to this email to add anything." : "")
-      : para("We have your ticket. IT will pick it up, and you will get an email when something changes."));
-  } else if (e.field === "status") {
-    blocks.push(para("The status of your ticket is now ", { b: LABEL[e.new_value ?? ""] ?? e.new_value ?? "updated" }, "."));
-    if (e.new_value === "resolved") blocks.push(para("If it is not fixed, open the ticket and say so: it goes straight back to IT."));
-  } else if (e.new_assignee) blocks.push(para({ b: e.new_assignee }, " is now working on your ticket."));
-  else blocks.push(para("Your ticket is waiting to be assigned."));
-  blocks.push(ticketLine(e.ref, e.title));
-  const url = ticketUrl("requester", e.ticket_id);
-  if (url) blocks.push(button(button_label, url));
-  const { html, text } = shell(blocks, "You get these emails because of a ticket you raised. You can switch them off under Your account in the helpdesk.");
-  return { to: e.to_email, subject: `[${e.ref}] ${e.title}`, html, text };
-}
-
-/** The one-time welcome for someone who has just created their account. */
-export function composeWelcome(u: { name: string; email: string }): Mail {
-  const first = u.name.split(" ")[0] || "there";
-  const step = (lead: string, rest: string): Block => ({
-    html: `<p style="margin:0 0 10px;padding-left:14px;border-left:3px solid #00a859;line-height:1.5;font-size:14px"><b>${esc(lead)}</b><br><span style="color:#3a3a36">${esc(rest)}</span></p>`,
-    text: `- ${lead}: ${rest}`,
-  });
-  const blocks: Block[] = [
-    para(`Hi ${first},`),
-    para("Welcome to the ", { b: "Fortress Oil & Gas Helpdesk" }, ". Your account is ready, and IT is here to help you get back to work quickly."),
-    para("Here is how it works:"),
-    step("Raise a ticket", "Describe the problem in a few words and add a screenshot if you can. It takes less than a minute."),
-    step("Follow it", "My queue shows where your ticket sits in line, and the Live board shows what IT is working on right now."),
-    step("Stay informed", "You will get an email when your ticket is picked up, answered or resolved. You can also chat with IT on the ticket itself."),
-    step("Try the Help pages first", "Short guides for common problems (Wi-Fi, printing, passwords, Microsoft 365) are there if you would like to fix something yourself."),
-    step("Share your computer's details", "Under Account > This computer you can send IT your computer's specifications once, so problems are solved faster."),
-  ];
-  if (config.appUrl) blocks.push(button("Open the helpdesk", config.appUrl));
-  blocks.push(para("Kind regards,"), para({ b: "IT Support" }, ", Fortress Oil & Gas"));
-  const { html, text } = shell(blocks, "You are receiving this one-time message because an account was created for you on the helpdesk. You can switch off ticket emails under Your account.");
-  return { to: u.email, subject: "Welcome to the Fortress Oil & Gas Helpdesk", html, text };
-}
-
-/** Several unseen updates on one ticket in one email: what changed, and only the latest few messages (never the whole conversation). */
-export function composeRequesterGroup(events: Pending[]): Mail {
-  if (events.length === 1) return composeRequester(events[0]!);
-  const e0 = events[0]!;
-  const first = e0.to_name.split(" ")[0] || "there";
-  const blocks: Block[] = [para(`Hi ${first},`), para("There are updates on your ticket that you have not seen yet:")];
-  const lastStatus = [...events].reverse().find((e) => e.field === "status");
-  const lastAssign = [...events].reverse().find((e) => e.field === "assignee" && e.new_assignee);
-  if (lastStatus) blocks.push(para("The status is now ", { b: LABEL[lastStatus.new_value ?? ""] ?? lastStatus.new_value ?? "updated" }, "."));
-  if (lastAssign) blocks.push(para({ b: lastAssign.new_assignee! }, " is now working on your ticket."));
-  const replies = events.filter((e) => e.field === "reply");
-  for (const r of replies.slice(-3)) blocks.push(para({ b: r.actor ?? "IT" }, " from IT replied:"), quote((r.reply || "Sent an attachment.").length > 500 ? (r.reply || "").slice(0, 500).trimEnd() + "…" : r.reply || "Sent an attachment."));
-  if (replies.length > 3) blocks.push(para(`…and ${replies.length - 3} earlier message${replies.length - 3 === 1 ? "" : "s"} in the conversation.`));
-  if (replies.length) blocks.push(para(repliesComeBack() ? "Reply to this email to answer, or open the helpdesk." : "Open the helpdesk to answer."));
-  blocks.push(ticketLine(e0.ref, e0.title));
-  const url = ticketUrl("requester", e0.ticket_id);
-  if (url) blocks.push(button(replies.length ? "Open the conversation" : "Open my ticket", url));
-  const { html, text } = shell(blocks, "You get this email because you have not opened the ticket in the helpdesk yet. You can switch these emails off under Your account.");
-  return { to: e0.to_email, subject: `[${e0.ref}] ${e0.title}`, html, text };
-}
-
-/** One email per person per round: a single update reads like the bell, several become a short list. */
-export function composeStaff(rows: StaffRow[]): Mail {
-  const r0 = rows[0]!;
-  const first = r0.name.split(" ")[0] || "there";
-  const blocks: Block[] = [para(`Hi ${first},`)];
-  if (rows.length === 1) {
-    blocks.push(para({ b: r0.title }), para(r0.body));
-  } else {
-    blocks.push(para(`${rows.length} things are waiting for you on the helpdesk:`));
-    for (const r of rows.slice(0, 12)) blocks.push({ html: `<p style="margin:0 0 10px;font-size:14px;line-height:1.5"><b>${esc(r.title)}</b><br><span style="color:#4a4a45">${esc(r.body)}</span></p>`, text: `- ${r.title}${r.body ? ": " + r.body : ""}` });
-    if (rows.length > 12) blocks.push(para(`…and ${rows.length - 12} more.`));
-  }
-  const only = rows.length === 1 && r0.ticket_id ? ticketUrl(r0.role, r0.ticket_id) : "";
-  const home = config.appUrl ? `${config.appUrl}${r0.role === "admin" ? "/admin" : "/agent"}` : "";
-  if (only) blocks.push(button("Open the ticket", only));
-  else if (home) blocks.push(button("Open the helpdesk", home));
-  const { html, text } = shell(blocks, "You are emailed only about things you have not already seen in the helpdesk. You can switch these emails off under Account.");
-  return { to: r0.email, subject: rows.length === 1 ? r0.title : `${rows.length} updates waiting on the helpdesk`, html, text };
-}
+/* What the emails SAY and look like lives in mailrender.ts (templates an admin can edit, see mailtemplates.ts). This file decides WHO gets what and WHEN,
+   and carries it by Graph, SMTP or the log. */
+export const composeRequester = (e: Pending) => renderRequester(e, mailCtx());
+export const composeRequesterGroup = (events: Pending[]) => renderGroup(events, mailCtx());
+export const composeStaff = (rows: StaffRow[]) => renderStaff(rows, mailCtx());
+export const composeWelcome = (u: { name: string; email: string }) => renderWelcome(u, mailCtx());
 
 /* ---------- transports ---------- */
 type Sender = (m: Mail) => Promise<void>;
@@ -215,7 +68,16 @@ async function graphSender(): Promise<Sender> {
     const res = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(g.sender)}/sendMail`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ message: { subject: m.subject, body: { contentType: "HTML", content: m.html }, toRecipients: [{ emailAddress: { address: m.to } }] }, saveToSentItems: false }),
+      body: JSON.stringify({
+        message: {
+          subject: m.subject,
+          body: { contentType: "HTML", content: m.html },
+          toRecipients: [{ emailAddress: { address: m.to } }],
+          // The logo is attached to the message itself ("inline", referred to as cid:fglogo), so it shows wherever the email is read.
+          ...(m.logo ? { attachments: [{ "@odata.type": "#microsoft.graph.fileAttachment", name: "logo.png", contentType: "image/png", contentBytes: logoBytes().toString("base64"), isInline: true, contentId: "fglogo" }] } : {}),
+        },
+        saveToSentItems: false,
+      }),
     });
     if (!res.ok) throw new Error(`Graph sendMail ${res.status}${await graphReason(res)}`);
   };
@@ -226,7 +88,7 @@ function smtpSender(): Sender {
   const transport = nodemailer.createTransport({ host: s.host, port: s.port, secure: s.secure, auth: s.user ? { user: s.user, pass: s.pass } : undefined });
   const from = config.mail.from || s.user;
   return async (m) => {
-    await transport.sendMail({ from, to: m.to, subject: m.subject, html: m.html, text: m.text });
+    await transport.sendMail({ from, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(m.logo ? { attachments: [{ filename: "logo.png", content: logoBytes(), contentType: "image/png", cid: "fglogo", contentDisposition: "inline" as const }] } : {}) });
   };
 }
 
@@ -265,15 +127,17 @@ export async function mailInfo() {
 
 /** An admin's "send me a test": the same path as the real emails, and the error (if any) comes straight back. */
 export async function sendTest(to: string): Promise<string> {
+  return sendOne(composeTest(to, mailCtx()));
+}
+
+/** Sends one email now through whatever is set up (used for tests and for "send me this email" in the template editor). */
+export async function sendOne(m: Mail): Promise<string> {
   const sender = pickSender();
   if (!sender) throw new Error("Email is not set up. Set SMTP_* or GRAPH_* in .env (or MAIL_LOG_ONLY=1 to print emails to the log).");
-  const { html, text } = shell(
-    [para("This is a test email from your helpdesk."), para("If you can read this, ticket emails will reach people. The real ones look like this, with the ticket and a button to open it."), ticketLine("FG-0000", "A sample ticket"), ...(config.appUrl ? [button("Open the helpdesk", config.appUrl)] : [])],
-    "Sent from Admin > System.",
-  );
-  await deliver(sender, { to, subject: "Test email from the Fortress Oil & Gas Helpdesk", html, text });
+  await deliver(sender, m);
   return sender.name;
 }
+setMailSender(sendOne);
 
 /* ---------- the loop ---------- */
 let warned = false;

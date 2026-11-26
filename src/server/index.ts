@@ -32,6 +32,8 @@ import { announce, loadAnnouncement } from "./announce";
 import { loadTeams } from "./teams";
 import { loadAutomation, startAutomation } from "./automation";
 import { seedForms } from "./forms";
+import { loadTemplates } from "./mailtemplates";
+import { verify } from "./verify";
 import { startUpdateChecks } from "./updates";
 import { applyStoredSettings } from "./settings";
 import { sso } from "./sso";
@@ -86,6 +88,7 @@ app.get("/healthz", async (c) => {
 
 app.route("/api", publicConfig); // GET /config (public)
 app.route("/api/auth/microsoft", sso); // sign in with Microsoft 365: /start and /callback (browser navigations, no session needed)
+app.route("/verify", verify); // "Verify this email": the page an email's link opens (public, signed token)
 app.route("/api/inbound", inbound); // POST /email: mail relays, authenticated by INBOUND_SECRET (404 when it is not set)
 
 /* ---- normal users (name + company email) ---- */
@@ -146,6 +149,7 @@ await loadAnnouncement();
 await loadTeams();
 await loadAutomation();
 await seedForms();
+await loadTemplates();
 const prune = () => { pruneNotifications(); pruneAudit(config.auditRetentionDays); void pruneDrafts().catch(() => {}); };
 prune();
 const pruneTimer = setInterval(prune, 6 * 3600_000);

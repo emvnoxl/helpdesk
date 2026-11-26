@@ -1258,7 +1258,7 @@ const ST = "/api/staff/tickets";
   ok("…only once, and it is cleared afterwards", (log.match(new RegExp("to=" + esc(meR.email) + " subject=\"Welcome", "g")) ?? []).length === 1 && dbq("select welcome_pending p from users where email = ?", meR.email)[0].p === 0);
   ok("…staff and accounts made from an email do not get one", !/to=esi\.agent@[^ ]+ subject="Welcome/.test(log) && !/to=kofi\.mensah@[^ ]+ subject="Welcome/.test(log) && dbq("select count(*) n from users where welcome_pending = 1 and role <> 'requester'")[0].n === 0);
   ok("the admin is emailed about the new ticket (it was unread: nobody is at the helpdesk in a test)", await waitLog(new RegExp("\\[mail\\] to=" + esc(ADMIN) + " subject=\"[^\"]*\" :: (?:(?!\\[mail\\])[^])*New ticket " + tk.ref + "[:\\n]"), 8000), (log.match(/\[mail\] to=admin@[^\n]*/g) ?? []).slice(-3).join(" | "));
-  ok("every email is branded plain text too (name and footer)", /Fortress Oil & Gas Helpdesk\nYou get these emails because of a ticket you raised/.test(log));
+  ok("every email is branded plain text too (who it is from, the safety line, the footer)", /A genuine message from the Fortress IT Team: sent by the Fortress Oil & Gas Helpdesk[^\n]*\n[^]*?never ask you for your password[^]*?You get these emails because of a ticket you raised/.test(log));
 
   // a reply from IT is emailed with the words, and the status change too
   await req("POST", ST + "/" + tk.id + "/comments", { body: "Please try a different cable, then tell me.", internal: false }, A);
@@ -2003,6 +2003,91 @@ const ST = "/api/staff/tickets";
   ok("forms: yes/no only accepts Yes or No", x.code === 400);
   ok("forms: clearing a form turns the questions off", (await req("PUT", "/api/admin/forms/" + printing.id, { fields: [] }, A)).code === 200 && (await req("GET", "/api/tickets/categories", undefined, RQb)).json.find((c) => c.name === "Printing").fields.length === 0);
   ok("forms: the change is in the activity log", dbq("select count(*) n from audit_log where action = 'forms.updated'")[0].n >= 2);
+}
+
+{ // Email templates: edit the wording, preview, logo, the genuine-message block and the public "verify this email" page
+  const ET = "/api/admin/email-templates";
+  const until = async (fn, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 150)); } return fn(); };
+  const rawGet = (s, p) => fetch(BASE + p, { headers: s.cookie ? { cookie: s.cookie } : {} });
+  let x = await req("GET", ET, undefined, GE);
+  ok("templates: an agent can't reach them (404)", x.code === 404 && (await req("PUT", ET, {}, GE)).code === 404);
+  ok("templates: nobody signed out can (401)", (await req("GET", ET, undefined, jar())).code === 401);
+  x = await req("GET", ET, undefined, A);
+  ok("templates: the editor gets all seven emails, the defaults and the placeholders each accepts", x.code === 200 && x.json.kinds.length === 7 && x.json.kinds.every((k) => k.vars.includes("team") && k.fields.length >= 3) && x.json.templates.brand.team === "Fortress IT Team" && x.json.customised === 0 && x.json.custom_logo === false, JSON.stringify(x.json.kinds.map((k) => k.id)));
+
+  // the verify link needs the helpdesk's address
+  const sett = (await req("GET", "/api/admin/system/settings", undefined, A)).json;
+  await req("PUT", "/api/admin/system/settings", { address: { app_url: BASE, alt_urls: sett.address.alt_urls, trust_proxy: sett.address.trust_proxy } }, A);
+
+  // ---- editing ----
+  ok("templates: an empty required part is refused, naming it", (await req("PUT", ET, { kinds: { created: { intro: "  " } } }, A)).json.error?.includes("Ticket received") && (await req("PUT", ET, { brand: { team: "" } }, A)).code === 400);
+  ok("templates: welcome steps in the wrong shape are refused", (await req("PUT", ET, { kinds: { welcome: { steps: "no divider here" } } }, A)).code === 400);
+  const draft = { brand: { team: "Acme IT Desk", contact: "Reply to this email, or call IT on ext 100.", trust: "Acme IT will never ask for your password. Tell us if an email does." }, kinds: { created: { subject: "Got it: {ref}", intro: "Thanks **{name}**, IT has your ticket ({ref}) and is on it." } } };
+  x = await req("POST", ET + "/preview", { kind: "created", templates: draft }, A);
+  ok("templates: the preview shows a draft before it is saved (subject, wording, signature, safety line, verify link, logo from the page)", x.code === 200 && x.json.subject === "Got it: FG-0042" && x.json.html.includes("Thanks <b>Kofi</b>, IT has your ticket (FG-0042)") && x.json.html.includes("Acme IT Desk") && x.json.html.includes("Acme IT will never ask for your password") && x.json.html.includes("Verify this email") && x.json.html.includes("src=\"data:image/png;base64,"), JSON.stringify(x.json).slice(0, 300));
+  ok("templates: …and a draft with a problem comes back as a message, not a failure", (await req("POST", ET + "/preview", { kind: "created", templates: { brand: { team: "" } } }, A)).json.error?.includes("Who the emails are from"));
+  ok("templates: nothing was saved by previewing", (await req("GET", ET, undefined, A)).json.customised === 0);
+  x = await req("PUT", ET, draft, A);
+  ok("templates: saved", x.code === 200 && x.json.templates.brand.team === "Acme IT Desk");
+  x = await req("GET", ET, undefined, A);
+  ok("templates: only the changes are stored", x.json.customised === 5 && JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).kinds.created.subject === "Got it: {ref}" && !("reply" in JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).kinds));
+  ok("templates: the save is in the activity log", dbq("select count(*) n from audit_log where action = 'system.settings' and summary like 'Email templates saved%'")[0].n >= 1);
+
+  // ---- a real email uses it ----
+  const RQe = jar();
+  await req("POST", "/api/identify", { name: "Template Person", email: "template.person@" + DOMAIN, new_pin: "528394" }, RQe);
+  const before = log.length;
+  const tk = (await req("POST", "/api/tickets", { title: "Template check: monitor flicker", description: "The screen flickers on and off.", category_id: 9 }, RQe)).json;
+  ok("templates: the real 'ticket received' email says what the admin wrote, signed by the team they named", await until(() => new RegExp("\\[mail\\] to=template\\.person@[^ ]+ subject=\"Got it: " + tk.ref + "\" :: Hi Template,\\s+Thanks Template, IT has your ticket \\(" + tk.ref + "\\) and is on it\\.").test(log.slice(before))), log.slice(before).slice(0, 500));
+  const mailText = log.slice(before).split("[mail] to=").find((m) => m.startsWith("template.person@") && m.includes("Got it: " + tk.ref)) ?? ""; // (the welcome email went to the same person a moment earlier)
+  ok("templates: …with the signature, the contact line and the admin's safety line", /Kind regards,\nAcme IT Desk\nReply to this email, or call IT on ext 100\./.test(mailText) && /A genuine message from the Acme IT Desk: sent by the Fortress Oil & Gas Helpdesk \([^)]+\) to template\.person@[^ ]+ about FG-\d+\./.test(mailText) && /Acme IT will never ask for your password/.test(mailText));
+  const vurl = (mailText.match(/Verify this email: (\S+)/) ?? [])[1];
+  ok("templates: …and a verify link on the helpdesk's own address", !!vurl && vurl.startsWith(BASE + "/verify?m="), String(vurl));
+
+  // ---- the public verify page ----
+  const vpath = new URL(vurl).pathname + new URL(vurl).search;
+  let pg = await rawGet(jar(), vpath);
+  let html = await pg.text();
+  ok("verify: opens with no sign-in and says it is genuine, with what it was, about which ticket, and a MASKED recipient", pg.status === 200 && html.includes("This email is genuine") && html.includes("a confirmation that your ticket was received") && html.includes(tk.ref) && html.includes("te***@" + DOMAIN) && !html.includes("template.person@"), html.slice(0, 200));
+  ok("verify: the page is not stored or indexed", pg.headers.get("cache-control") === "no-store" && /noindex/.test(pg.headers.get("x-robots-tag") ?? ""));
+  pg = await rawGet(jar(), vpath.slice(0, -3) + "AAA");
+  html = await pg.text();
+  ok("verify: a token that was changed is NOT confirmed, and the page warns not to trust the email", pg.status === 404 && html.includes("We could not verify this email") && html.includes("not from IT at all"));
+  pg = await rawGet(jar(), "/verify");
+  ok("verify: no token, or rubbish, is not confirmed either", pg.status === 404 && (await rawGet(jar(), "/verify?m=abc.def")).status === 404 && (await rawGet(jar(), "/verify?m=" + "x".repeat(5000))).status === 404);
+  ok("verify: a page that shows a token never echoes it back as HTML", !(await (await rawGet(jar(), "/verify?m=<script>alert(1)</script>")).text()).includes("<script>alert"));
+
+  // ---- send me this email ----
+  const b2 = log.length;
+  x = await req("POST", ET + "/test", { kind: "reply" }, A);
+  ok("templates: 'send me this email' goes to the admin's own address with the draft's wording", x.code === 200 && x.json.to === ADMIN && await until(() => new RegExp("\\[mail\\] to=" + ADMIN.replace(/[.*+?^$()|[\\]\\\\]/g, "\\{ // Admin: disable and delete clients") + " subject=\"\\[FG-0042\\] Printer").test(log.slice(b2))), JSON.stringify(x.json));
+  ok("templates: a sample for an email that does not exist is refused", (await req("POST", ET + "/test", { kind: "nope" }, A)).code === 400 && (await req("POST", ET + "/preview", { kind: "nope" }, A)).code === 400);
+
+  // ---- the logo ----
+  const png = (w, h, pad = 0) => { const b = Buffer.alloc(33 + pad); Buffer.from("89504e470d0a1a0a", "hex").copy(b); b.writeUInt32BE(13, 8); b.write("IHDR", 12); b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20); return b; };
+  const up = async (bytes, name) => { const fd = new FormData(); fd.append("file", new Blob([bytes]), name); const res = await fetch(BASE + ET + "/logo", { method: "PUT", headers: { cookie: A.cookie }, body: fd }); const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; } return { code: res.status, json }; };
+  const def = Buffer.from(await (await rawGet(A, ET + "/logo")).arrayBuffer());
+  ok("logo: the helpdesk's own logo is served as a PNG", def.subarray(0, 4).toString("hex") === "89504e47" && def.length > 5000);
+  ok("logo: only an admin can see or change it", (await rawGet(jar(), ET + "/logo")).status === 401 && (await up(png(300, 100), "x.png")).code === 200 && (await fetch(BASE + ET + "/logo", { method: "PUT", headers: { cookie: GE.cookie }, body: new FormData() })).status === 404);
+  ok("logo: a picture that is not a PNG is refused", (await up(Buffer.from("GIF89a not a png at all"), "x.png")).code === 415 && (await up(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"), "x.png")).code === 415);
+  ok("logo: one that is far too small or an odd shape is refused", (await up(png(40, 40), "x.png")).code === 422 && (await up(png(2000, 100), "x.png")).code === 422);
+  ok("logo: one that is too big is refused", (await up(png(300, 100, 400 * 1024), "x.png")).code === 413);
+  x = await up(png(300, 100, 50), "mine.png");
+  const mine = Buffer.from(await (await rawGet(A, ET + "/logo")).arrayBuffer());
+  ok("logo: an admin's own logo replaces it (and the editor knows)", x.code === 200 && x.json.width === 300 && mine.length === 83 && (await req("GET", ET, undefined, A)).json.custom_logo === true);
+  x = await req("DELETE", ET + "/logo", undefined, A);
+  ok("logo: back to the helpdesk's logo", x.code === 200 && Buffer.from(await (await rawGet(A, ET + "/logo")).arrayBuffer()).equals(def) && (await req("GET", ET, undefined, A)).json.custom_logo === false);
+
+  // ---- switches ----
+  await req("PUT", ET, { ...draft, brand: { ...draft.brand, show_logo: false, show_verify: false } }, A);
+  const b3 = log.length;
+  const tk2 = (await req("POST", "/api/tickets", { title: "Template check two: keyboard", description: "Keys stick when typing.", category_id: 9 }, RQe)).json;
+  ok("templates: with the verify link switched off the email has none, but still says it is genuine", await until(() => log.slice(b3).includes("Got it: " + tk2.ref)) && !/Verify this email/.test(log.slice(b3)) && /A genuine message from the Acme IT Desk/.test(log.slice(b3)));
+
+  // ---- back to the defaults, and the address as it was ----
+  x = await req("PUT", ET, { brand: {}, kinds: {} }, A);
+  ok("templates: everything back to the defaults", x.code === 200 && (await req("GET", ET, undefined, A)).json.customised === 0 && JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).brand !== undefined && Object.keys(JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).kinds).length === 0);
+  await req("PUT", "/api/admin/system/settings", { address: { app_url: sett.address.app_url, alt_urls: sett.address.alt_urls, trust_proxy: sett.address.trust_proxy } }, A);
 }
 
 { // Admin: disable and delete clients

@@ -106,6 +106,11 @@ line for every call (who called, how long, or that it was missed) and the activi
 The easy way is the built-in Caddy (next section). Or put nginx, Caddy or Traefik in front yourself. Then in `.env` set `APP_URL=https://helpdesk.yourcompany.com` and
 `TRUST_PROXY=1`. (Staff sessions use `Secure` cookies once `APP_URL` is https.)
 
+### Email templates and the "genuine message" block
+Admin > System > Email templates: change what every email says (ticket received, IT replied, status changed, someone took it, several updates, welcome, and the IT-staff digest), with a live preview and "Send me this email". Under **Branding & trust**: the name and team the emails come from, the sign-off, how to reach IT, the **safety line** ("IT will never ask for your password…"), the logo (the helpdesk's own, or upload your own PNG) and the **Verify this email** link.
+Every email carries the logo, a signature from the team, and a box saying it is a genuine message, who sent it, to whom and about which ticket. The "Verify this email" link opens a page on your helpdesk that confirms it, and the mark is signed by the server, so nobody can copy it onto a fake email. It needs the helpdesk address set under System > Address.
+Tip: tell staff once, "an email from IT has the logo and a green genuine-message box with a verify link; if it asks for a password, it is not us". Sending from your own Microsoft 365 mailbox (Graph) also makes the emails pass SPF and DKIM.
+
 ### Restoring a backup
 Admin > System > Backups. Press **Restore…** next to the backup you want (or **Restore from a file…** for one you saved earlier, even from another computer). The helpdesk checks it, shows how many tickets and people it holds compared with now, and asks you to type RESTORE. Then it takes a backup of today's state first, restarts for about a minute, and comes back with the old data. Your previous state stays in the list, so a restore can be undone the same way; the old database file is also kept in the data folder as `helpdesk.db.before-restore-…`. Uploaded files are never deleted.
 A backup from another computer was encrypted with that computer's key, so saved email and Microsoft passwords may need entering again. If the helpdesk will not start at all, the manual steps under *If the helpdesk will not start at all* on that page still work.
