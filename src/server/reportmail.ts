@@ -4,7 +4,7 @@ import { audit, SYSTEM } from "./audit";
 import { config } from "./config";
 import { db } from "./db";
 import { composeReport, type Mail, type ReportMailData } from "./mailrender";
-import { logoBytes, mailCtx } from "./mailtemplates";
+import { mailCtx, previewImages } from "./mailtemplates";
 import { mailInfo, sendOne } from "./notifier";
 import { buildReport, monthKey, parseMonth } from "./reports";
 import { getSetting, putSetting } from "./sla";
@@ -202,6 +202,6 @@ reportEmail.post("/preview", async (c) => {
   const b = await c.req.json().catch(() => ({}) as Record<string, unknown>);
   const month = parseMonth(typeof b.month === "string" ? b.month : prevMonthOf());
   if (!month) return c.json({ error: "Pick a month in the form 2026-10." }, 400);
-  const m: Mail = composeReport({ name: c.get("user").name, email: c.get("user").email }, await dataFor(month), { ...mailCtx(), preview: true, previewLogo: "data:image/png;base64," + logoBytes().toString("base64") });
+  const m: Mail = composeReport({ name: c.get("user").name, email: c.get("user").email }, await dataFor(month), { ...mailCtx(), preview: true, ...previewImages() });
   return c.json({ subject: m.subject, html: m.html });
 });

@@ -6,6 +6,7 @@ import { type AppEnv } from "./auth";
 import { audit } from "./audit";
 import { config, sessionSecret } from "./config";
 import { DEFAULT_LOGO_PNG_B64 } from "./emailLogo";
+import { LOCK_PNG_B64, SHIELD_PNG_B64 } from "./emailIcons";
 import { BRAND_FIELDS, DEFAULT_BRAND, DEFAULT_KINDS, KINDS, diff, merge, sampleMail, validate, type Ctx, type Kind, type Mail, type Templates } from "./mailrender";
 import { getSetting, putSetting } from "./sla";
 
@@ -35,6 +36,12 @@ export function logoBytes(): Buffer {
 /** The notifier registers how to send one email now (the transport lives there). */
 let send: (m: Mail) => Promise<string> = async () => { throw new Error("Email is not set up."); };
 export const setMailSender = (fn: (m: Mail) => Promise<string>) => { send = fn; };
+
+/** The preview sits in a sandboxed frame that cannot fetch cid: pictures, so it gets them as data: addresses. */
+export const previewImages = () => ({
+  previewLogo: "data:image/png;base64," + logoBytes().toString("base64"),
+  previewIcons: { shield: "data:image/png;base64," + SHIELD_PNG_B64, lock: "data:image/png;base64," + LOCK_PNG_B64 },
+});
 
 const isKind = (k: unknown): k is Kind => KINDS.some((x) => x.id === k);
 
@@ -76,7 +83,7 @@ emailTemplates.post("/preview", async (c) => {
     if (!r.ok) return c.json({ error: r.error });
     t = r.t;
   }
-  const m = sampleMail(b.kind, { ...mailCtx(), t, preview: true, previewLogo: "data:image/png;base64," + logoBytes().toString("base64") });
+  const m = sampleMail(b.kind, { ...mailCtx(), t, preview: true, ...previewImages() });
   return c.json({ subject: m.subject, html: m.html });
 });
 

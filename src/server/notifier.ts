@@ -3,6 +3,7 @@ import { config } from "./config";
 import { db } from "./db";
 import { composeRequester as renderRequester, composeRequesterGroup as renderGroup, composeStaff as renderStaff, composeTest, composeWelcome as renderWelcome, type Mail, type Pending, type StaffRow } from "./mailrender";
 import { logoBytes, mailCtx, setMailSender } from "./mailtemplates";
+import { LOCK_PNG_B64, SHIELD_PNG_B64 } from "./emailIcons";
 
 /* Sends the helpdesk's emails. It runs inside the server on a timer: no cron service needed.
    Transport, in order of preference: MAIL_LOG_ONLY=1 (print to the log), Microsoft Graph (if configured), SMTP (if configured).
@@ -61,6 +62,13 @@ export async function graphToken(): Promise<string> {
   }
   return cachedToken.value;
 }
+/** The pictures an email shows (logo, shield, padlock) travel inside the message, referred to as cid:..., so they appear wherever it is read. */
+export function inlineImages(m: Mail): { cid: string; name: string; bytes: Buffer }[] {
+  return [
+    ...(m.logo ? [{ cid: "fglogo", name: "logo.png", bytes: logoBytes() }] : []),
+    ...(m.icons ? [{ cid: "fgshield", name: "verified.png", bytes: Buffer.from(SHIELD_PNG_B64, "base64") }, { cid: "fglock", name: "lock.png", bytes: Buffer.from(LOCK_PNG_B64, "base64") }] : []),
+  ];
+}
 async function graphSender(): Promise<Sender> {
   const g = config.mail.graph;
   return async (m) => {
@@ -73,8 +81,8 @@ async function graphSender(): Promise<Sender> {
           subject: m.subject,
           body: { contentType: "HTML", content: m.html },
           toRecipients: [{ emailAddress: { address: m.to } }],
-          // The logo is attached to the message itself ("inline", referred to as cid:fglogo), so it shows wherever the email is read.
-          ...(m.logo ? { attachments: [{ "@odata.type": "#microsoft.graph.fileAttachment", name: "logo.png", contentType: "image/png", contentBytes: logoBytes().toString("base64"), isInline: true, contentId: "fglogo" }] } : {}),
+          // The pictures are attached to the message itself ("inline", referred to as cid:fglogo, cid:fgshield, cid:fglock), so they show wherever the email is read.
+          ...(inlineImages(m).length ? { attachments: inlineImages(m).map((i) => ({ "@odata.type": "#microsoft.graph.fileAttachment", name: i.name, contentType: "image/png", contentBytes: i.bytes.toString("base64"), isInline: true, contentId: i.cid })) } : {}),
         },
         saveToSentItems: false,
       }),
@@ -88,7 +96,7 @@ function smtpSender(): Sender {
   const transport = nodemailer.createTransport({ host: s.host, port: s.port, secure: s.secure, auth: s.user ? { user: s.user, pass: s.pass } : undefined });
   const from = config.mail.from || s.user;
   return async (m) => {
-    await transport.sendMail({ from, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(m.logo ? { attachments: [{ filename: "logo.png", content: logoBytes(), contentType: "image/png", cid: "fglogo", contentDisposition: "inline" as const }] } : {}) });
+    await transport.sendMail({ from, to: m.to, subject: m.subject, html: m.html, text: m.text, ...(inlineImages(m).length ? { attachments: inlineImages(m).map((i) => ({ filename: i.name, content: i.bytes, contentType: "image/png", cid: i.cid, contentDisposition: "inline" as const })) } : {}) });
   };
 }
 

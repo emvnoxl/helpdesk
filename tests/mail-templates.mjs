@@ -120,5 +120,18 @@ ok("schedule: after a send the next slot is in the future; after months of downt
 ok("schedule: the suggestion is the 1st of next month at 08:00 (also in December)", iso(SC.firstOfNextMonth(nowS)) === "2027-01-01T08:00" && iso(SC.firstOfNextMonth(T("2026-05-31T23:00"))) === "2026-06-01T08:00");
 ok("schedule: a report covers the month before its send date", SC.reportMonthFor(T("2026-12-05T08:30")) === "2026-11" && SC.reportMonthFor(T("2027-01-01T08:00")) === "2026-12" && SC.reportMonthFor(T("2026-03-31T23:59")) === "2026-02");
 
+// ---- the look: the app's font, the verified-message card, the icons ----
+m = M.composeRequester(pending, ctx());
+ok("look: the app's font (Montserrat) comes first, with fallbacks for programs that cannot load it", /font-family:'Montserrat','Segoe UI',Helvetica,Arial,sans-serif/.test(m.html) && /fonts\.googleapis\.com\/css2\?family=Montserrat/.test(m.html) && M.FONT.startsWith("'Montserrat'"));
+ok("look: it has the proper document head (charset, viewport) and a phone layout", /<meta charset="utf-8">/.test(m.html) && /name="viewport"/.test(m.html) && /@media only screen and \(max-width:620px\)/.test(m.html));
+ok("look: the verified-message card has the shield, who sent it, to whom, what it is about and the message type", /<img src="cid:fgshield"/.test(m.html) && /Verified message/.test(m.html) && /A genuine message from the Fortress IT Team/.test(m.html) && /Sent to<\/td>/.test(m.html) && /kofi\.mensah@example\.com/.test(m.html) && />About<\/td>/.test(m.html) && /FG-0042/.test(m.html) && />Message<\/td>/.test(m.html) && /New reply/.test(m.html));
+ok("look: the safety line has a padlock, and the verify link is a button", /<img src="cid:fglock"/.test(m.html) && /Verify this email<\/a>/.test(m.html) && /border:2px solid #00a859/.test(m.html));
+ok("look: the header says what kind of message this is", [["created", "Ticket received"], ["reply", "New reply"], ["status", "Status update"], ["welcome", "Welcome"], ["report", "Monthly report"], ["staff", "IT update"]].every(([k, l]) => M.sampleMail(k, ctx()).html.includes(">" + l + "</span>")));
+ok("look: every email asks for the logo and the two icons to be attached (cid), and says so", m.logo === true && m.icons === true && M.KINDS.every((k) => M.sampleMail(k.id, ctx()).icons === true));
+ok("look: with the safety line emptied there is no padlock row, and with the verify link off no verify button", !/cid:fglock/.test(M.composeRequester(pending, { ...ctx(), t: M.validate({ brand: { trust: "" } }).t }).html) && !/Verify this email<\/a>/.test(M.composeRequester(pending, ctx({}, { show_verify: false })).html));
+ok("look: in the preview the icons are data: pictures (the preview frame cannot fetch cid:)", (() => { const h = M.composeRequester(pending, { ...ctx(), preview: true, previewLogo: "data:image/png;base64,L", previewIcons: { shield: "data:image/png;base64,S", lock: "data:image/png;base64,K" } }).html; return /src="data:image\/png;base64,S"/.test(h) && /src="data:image\/png;base64,K"/.test(h) && !/cid:fg/.test(h); })());
+ok("look: the welcome steps are numbered", /<div style="width:30px[^>]*>1<\/div>/.test(M.composeWelcome({ name: "A B", email: "a@b.com" }, ctx()).html) && /<div style="width:30px[^>]*>5<\/div>/.test(M.composeWelcome({ name: "A B", email: "a@b.com" }, ctx()).html));
+ok("look: the plain-text twin is unchanged by all this (no table or picture markup, still has the genuine-message lines)", !/<(table|img|td|div|style|span)/.test(m.text) && !/cid:/.test(m.text) && /A genuine message from the Fortress IT Team: sent by/.test(m.text));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
