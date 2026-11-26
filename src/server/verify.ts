@@ -11,7 +11,7 @@ import { clientIp } from "./auth";
 const limiter = new RateLimiter(60, 60_000);
 const KIND: Record<string, string> = {
   created: "a confirmation that your ticket was received", reply: "a reply from IT", status: "a change to the status of your ticket", assigned: "a note that someone from IT took your ticket",
-  digest: "an update on your ticket", welcome: "a welcome to the helpdesk", staff: "an update for the IT team", test: "a test email from the helpdesk",
+  digest: "an update on your ticket", report: "the monthly report", welcome: "a welcome to the helpdesk", staff: "an update for the IT team", test: "a test email from the helpdesk",
 };
 
 const page = (ok: boolean, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${ok ? "Genuine email" : "Could not verify this email"}</title>

@@ -8,7 +8,7 @@ import { signToken } from "./security";
    template is ever treated as HTML, so a template can't inject markup. Every email carries the same "this is genuine" block: who it is
    from, what IT will never ask for, and a link that opens a page on the helpdesk itself confirming the message (signed, so it can't be faked). */
 
-export type Kind = "created" | "reply" | "status" | "assigned" | "digest" | "welcome" | "staff";
+export type Kind = "created" | "reply" | "status" | "assigned" | "digest" | "welcome" | "staff" | "report";
 
 export interface Brand {
   name: string;        // the name at the top and in the footer, "Fortress Oil & Gas Helpdesk"
@@ -50,6 +50,7 @@ export const DEFAULT_KINDS: Record<Kind, KindText> = {
   digest: { subject: "[{ref}] {title}", intro: "There are updates on your ticket that you have not seen yet:", button: "Open my ticket" },
   welcome: { subject: "Welcome to the {helpdesk}", intro: "Welcome to the **{helpdesk}**. Your account is ready, and IT is here to help you get back to work quickly.", steps: DEFAULT_STEPS, button: "Open the helpdesk" },
   staff: { subject: "{count} updates waiting on the helpdesk", intro: "{count} things are waiting for you on the helpdesk:", button: "Open the ticket", button2: "Open the helpdesk" },
+  report: { subject: "{helpdesk} report for {month}", intro: "Here is how the helpdesk did in **{month}**.", button: "Open the full report" },
 };
 
 /** What an admin sees for each email: what it is for, which parts can be changed, and which {placeholders} work. */
@@ -99,6 +100,11 @@ export const KINDS: KindMeta[] = [
     { key: "intro", label: "Message (when there are several)", rows: 2, required: true },
     { key: "button", label: "Button (one ticket)", rows: 1, required: true },
     { key: "button2", label: "Button (several things)", rows: 1, required: true },
+  ] },
+  { id: "report", label: "Monthly report", when: "Sent once a month to the people chosen under System > Report email: the numbers for the month that just ended. It holds totals only, no ticket titles and no names.", vars: ["name", "fullname", "team", "helpdesk", "month"], fields: [
+    { key: "subject", label: "Subject", rows: 1, required: true },
+    { key: "intro", label: "Message", rows: 2, required: true },
+    { key: "button", label: "Button (people who can sign in to the helpdesk)", rows: 1, required: true },
   ] },
 ];
 
@@ -359,6 +365,55 @@ export function composeWelcome(u: { name: string; email: string }, x: Ctx): Mail
   return { to: u.email, subject: fill(T.subject!, v), html: s.html, text: s.text, logo: s.logo };
 }
 
+/* ---------- the monthly report ---------- */
+export interface ReportMailData {
+  label: string; partial: boolean;
+  kpis: { created: number; resolved: number; closed: number; open_end: number; old_open_end: number; median_first_response_h: number | null; median_resolution_h: number | null; sla_pct: number | null; sla_measured: number; csat_pct: number | null; rated: number };
+  prev_created: number | null;
+  categories: { name: string; n: number; share: number; avg_resolution_h: number | null }[];
+  priorities: { name: string; n: number; avg_resolution_h: number | null; sla_pct: number | null }[];
+  summary: string;
+}
+const dur = (h: number | null) => (h == null ? "–" : h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h < 48 ? `${Math.round(h * 10) / 10} h` : `${Math.round(h / 2.4) / 10} days`);
+const change = (now: number, prev: number | null) => (prev == null || (prev === 0 && now === 0) ? "" : prev === 0 ? "new" : `${now >= prev ? "up" : "down"} ${Math.abs(Math.round(((now - prev) / prev) * 100))}% on last month`);
+
+/** The report as a few totals and two small tables: nothing about individual tickets or people, so it is safe to send to anyone. */
+export function composeReport(to: { name: string; email: string }, d: ReportMailData, x: Ctx): Mail {
+  const T = x.t.kinds.report!;
+  const month = d.label + (d.partial ? " (so far)" : "");
+  const v = baseVars(x, to.name || "there", { month });
+  const k = d.kpis;
+  const cards: [string, string, string][] = [
+    ["Tickets raised", String(k.created), change(k.created, d.prev_created)],
+    ["Resolved", String(k.resolved), `${k.closed} closed`],
+    ["First reply (typical)", dur(k.median_first_response_h), ""],
+    ["Time to fix (typical)", dur(k.median_resolution_h), ""],
+    ["Met their target time", k.sla_pct == null ? "–" : `${k.sla_pct}%`, k.sla_measured ? `of ${k.sla_measured} finished` : ""],
+    ["Said it was fixed", k.csat_pct == null ? "–" : `${k.csat_pct}%`, k.rated ? `of ${k.rated} answer${k.rated === 1 ? "" : "s"}` : "no answers yet"],
+  ];
+  const cell = (c: [string, string, string]) =>
+    `<td width="50%" valign="top" style="padding:0 6px 12px 0"><div style="border:1px solid #e3e3dc;border-left:4px solid #00a859;border-radius:8px;padding:10px 12px"><div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6b6b66">${esc(c[0])}</div><div style="font-size:24px;font-weight:800;line-height:1.2;margin-top:2px">${esc(c[1])}</div><div style="font-size:12px;color:#4a4a45;min-height:15px">${esc(c[2])}</div></div></td>`;
+  const grid: Block = {
+    html: `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 6px">${[0, 2, 4].map((i) => `<tr>${cell(cards[i]!)}${cell(cards[i + 1]!)}</tr>`).join("")}</table>`,
+    text: cards.map((c) => `${c[0]}: ${c[1]}${c[2] ? ` (${c[2]})` : ""}`).join("\n"),
+  };
+  const open: Block = tpara(`Still open at the end of ${d.partial ? "the period" : "the month"}: **${k.open_end}**${k.old_open_end ? `, of which ${k.old_open_end} older than a week` : ""}.`);
+  const th = "padding:6px 8px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#6b6b66;text-align:left;border-bottom:2px solid #e3e3dc";
+  const td = "padding:7px 8px;font-size:14px;border-bottom:1px solid #eeeee8";
+  const table = (title: string, head: string[], rows: string[][]): Block => ({
+    html: `<p style="margin:14px 0 6px;font-size:15px;font-weight:700">${esc(title)}</p><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 14px"><tr>${head.map((h, i) => `<th style="${th}${i ? ";text-align:right" : ""}">${esc(h)}</th>`).join("")}</tr>${rows.map((r) => `<tr>${r.map((c, i) => `<td style="${td}${i ? ";text-align:right" : ";font-weight:600"}">${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,
+    text: `${title}\n` + rows.map((r) => "- " + r.join(" | ")).join("\n"),
+  });
+  const cats = d.categories.slice(0, 5);
+  const pris = d.priorities.filter((p) => p.n);
+  const blocks: Block[] = [hello(x, v), tpara(fill(T.intro!, v), ed(x, "kinds.report.intro")), ...(d.summary ? [tpara(d.summary)] : []), grid, open];
+  if (cats.length) blocks.push(table("Busiest categories", ["Category", "Tickets", "Share", "Typical fix"], cats.map((c) => [c.name, String(c.n), `${c.share}%`, dur(c.avg_resolution_h)])));
+  if (pris.length) blocks.push(table("By priority", ["Priority", "Tickets", "Typical fix", "Met target"], pris.map((p) => [p.name[0]!.toUpperCase() + p.name.slice(1), String(p.n), dur(p.avg_resolution_h), p.sla_pct == null ? "–" : `${p.sla_pct}%`])));
+  if (x.appUrl) blocks.push(button(T.button!, `${x.appUrl}/admin`, ed(x, "kinds.report.button")));
+  const s = shell(x, blocks, "You get this once a month because an admin chose you under System > Report email. Totals only: no ticket titles and no names.", { to: to.email, kind: "report" });
+  return { to: to.email, subject: fill(T.subject!, v), html: s.html, text: s.text, logo: s.logo };
+}
+
 /** The test email from System > Email: the same wrapper, so the admin sees the real look (logo, signature, genuine-message block). */
 export function composeTest(to: string, x: Ctx): Mail {
   const v = baseVars(x, "there");
@@ -378,6 +433,14 @@ export function sampleMail(kind: Kind, x: Ctx, to = "kofi.mensah@example.com"): 
     case "assigned": return composeRequester({ ...base, field: "assignee", new_assignee: "Esi Mensah" }, x);
     case "digest": return composeRequesterGroup([{ ...base, field: "assignee", new_assignee: "Esi Mensah" }, { ...base, field: "reply", id: 2 }, { ...base, field: "status", new_value: "waiting", id: 3 }], x);
     case "welcome": return composeWelcome({ name: "Kofi Mensah", email: to }, x);
+    case "report": return composeReport({ name: "Kofi Mensah", email: to }, {
+      label: "October 2026", partial: false,
+      kpis: { created: 64, resolved: 58, closed: 51, open_end: 9, old_open_end: 2, median_first_response_h: 0.6, median_resolution_h: 5.5, sla_pct: 92.3, sla_measured: 52, csat_pct: 88.9, rated: 18 },
+      prev_created: 52,
+      categories: [{ name: "Printing", n: 19, share: 29.7, avg_resolution_h: 3.2 }, { name: "Network", n: 14, share: 21.9, avg_resolution_h: 6.8 }, { name: "Accounts & Access", n: 11, share: 17.2, avg_resolution_h: 1.4 }, { name: "Hardware", n: 9, share: 14.1, avg_resolution_h: 22 }, { name: "Software", n: 6, share: 9.4, avg_resolution_h: 4.1 }],
+      priorities: [{ name: "urgent", n: 4, avg_resolution_h: 1.9, sla_pct: 100 }, { name: "high", n: 12, avg_resolution_h: 3.6, sla_pct: 91.7 }, { name: "medium", n: 40, avg_resolution_h: 6.1, sla_pct: 92.5 }, { name: "low", n: 8, avg_resolution_h: 26, sla_pct: 87.5 }],
+      summary: "In October 2026 the helpdesk received 64 tickets (up 23% on the month before), resolved 58 and closed 51. Printing was the busiest category with 19 tickets (29.7%).",
+    }, x);
     case "staff": return composeStaff([
       { id: 1, user_id: 1, kind: "new_ticket", title: "New ticket FG-0043", body: "Wi-Fi keeps dropping in the boardroom · from Ama Boateng", ticket_id: 43, ref: "FG-0043", email: to, name: "Esi Mensah", role: "agent" },
       { id: 2, user_id: 1, kind: "message", title: "Kofi Mensah on FG-0042", body: "Still offline, sorry.", ticket_id: 42, ref: "FG-0042", email: to, name: "Esi Mensah", role: "agent" },

@@ -56,6 +56,28 @@ export function cleanHardware(x: any) {
     gpus: arr(x.gpus, (g) => (g && typeof g === "object" ? drop({ name: str(g.name, 100), gb: num(g.gb, 0, 1024), driver: str(g.driver, 30) }) : null), 4),
     nics: arr(x.nics, nic, 6),
     battery: typeof x.battery === "boolean" ? x.battery : null,
+    mice: arr(x.mice, (m) => (m && typeof m === "object" ? drop({
+      name: str(m.name, 80),
+      connection: ["USB", "Bluetooth", "PS/2", "Built-in", "Other"].includes(m.connection) ? m.connection : null,
+      vid: typeof m.vid === "string" && /^[0-9A-Fa-f]{4}$/.test(m.vid) ? m.vid.toUpperCase() : null,
+      pid: typeof m.pid === "string" && /^[0-9A-Fa-f]{4}$/.test(m.pid) ? m.pid.toUpperCase() : null,
+    }) : null), 4),
+    keyboards: arr(x.keyboards, (m) => (m && typeof m === "object" ? drop({
+      name: str(m.name, 80),
+      connection: ["USB", "Bluetooth", "PS/2", "Built-in", "Other"].includes(m.connection) ? m.connection : null,
+      vid: typeof m.vid === "string" && /^[0-9A-Fa-f]{4}$/.test(m.vid) ? m.vid.toUpperCase() : null,
+      pid: typeof m.pid === "string" && /^[0-9A-Fa-f]{4}$/.test(m.pid) ? m.pid.toUpperCase() : null,
+    }) : null), 4),
+    monitors: arr(x.monitors, (m) => (m && typeof m === "object" ? drop({
+      name: str(m.name, 60),
+      maker: typeof m.maker === "string" && /^[A-Za-z]{3}$/.test(m.maker) ? m.maker.toUpperCase() : null,
+      code: typeof m.code === "string" && /^[0-9A-Fa-f]{4}$/.test(m.code) ? m.code.toUpperCase() : null,
+      serial: str(m.serial, 30),
+      year: num(m.year, 1990, 2100) !== null ? Math.round(m.year) : null,
+      week: num(m.week, 1, 53) !== null ? Math.round(m.week) : null,
+      inches: num(m.inches, 5, 120) !== null ? Math.round(m.inches) : null,
+      connection: ["HDMI", "DisplayPort", "DVI", "Built-in", "Wireless"].includes(m.connection) ? m.connection : null,
+    }) : null), 6),
   });
 }
 
@@ -154,6 +176,85 @@ if ($disks.Count -eq 0) { $disks = @(Get-CimInstance Win32_DiskDrive | ForEach-O
 $vols  = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { @{ drive = $_.DeviceID; gb = (Gb $_.Size); freeGb = (Gb $_.FreeSpace) } })
 $gpus  = @(Get-CimInstance Win32_VideoController | ForEach-Object { @{ name = $_.Name; gb = (Gb $_.AdapterRAM); driver = $_.DriverVersion } })
 $nics  = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=true' | ForEach-Object { @{ name = $_.Description; mac = $_.MACAddress; ips = @($_.IPAddress | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' }) } })
+# Mice: Windows calls every one "HID-compliant mouse", so the real name is read from the USB or Bluetooth device it hangs off.
+# A keyboard's own pointer controls are skipped; a laptop's touchpad is listed as Built-in.
+$mice = @()
+$seenMouse = @{}
+foreach ($m in @(Get-PnpDevice -Class Mouse -PresentOnly)) {
+  $id = [string]$m.InstanceId
+  if ($id -match '^(ROOT|SWD|TERMINPUT|RDP|VMBUS)') { continue }
+  $par = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Parent).Data
+  if (-not $par) { $par = $id }
+  $top = $par
+  $desc = ''
+  if ($par -like 'USB\*') {
+    $desc = [string](Get-PnpDeviceProperty -InstanceId $par -KeyName DEVPKEY_Device_BusReportedDeviceDesc).Data
+    $gp = [string](Get-PnpDeviceProperty -InstanceId $par -KeyName DEVPKEY_Device_Parent).Data
+    if ($gp -like 'USB\*') { $top = $gp }
+    if (-not $desc) { $desc = [string](Get-PnpDeviceProperty -InstanceId $top -KeyName DEVPKEY_Device_BusReportedDeviceDesc).Data }
+  }
+  if (($desc -match 'keyboard') -and ($desc -notmatch 'mouse')) { continue }
+  if ($seenMouse.ContainsKey($top)) { continue }
+  $seenMouse[$top] = $true
+  $conn = 'Other'
+  if (($id -match 'BTH') -or ($par -match 'BTH')) { $conn = 'Bluetooth' }
+  elseif ($par -like 'USB\*') { $conn = 'USB' }
+  elseif ($id -like 'HID\*') { $conn = 'Built-in' }
+  elseif ($id -match 'PNP0F|PS2') { $conn = 'PS/2' }
+  $nm = $desc
+  if (-not $nm) { if ($id -match '^HID\\([A-Za-z0-9]+)') { $nm = 'Touchpad (' + $Matches[1] + ')' } else { $nm = [string]$m.FriendlyName } }
+  $vid = $null; $pid2 = $null
+  if (($top + ' ' + $id) -match 'VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})') { $vid = $Matches[1].ToUpper(); $pid2 = $Matches[2].ToUpper() }
+  $mice += @{ name = $nm; connection = $conn; vid = $vid; pid = $pid2 }
+}
+# Keyboards, the same way (the dongle of a wireless mouse is skipped). A laptop's own keyboard is Built-in.
+$kbs = @()
+$seenKb = @{}
+foreach ($k in @(Get-PnpDevice -Class Keyboard -PresentOnly)) {
+  $id = [string]$k.InstanceId
+  if ($id -match '^(ROOT|SWD|TERMINPUT|RDP|VMBUS)') { continue }
+  $par = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Parent).Data
+  if (-not $par) { $par = $id }
+  $top = $par
+  $desc = ''
+  if ($par -like 'USB\*') {
+    $desc = [string](Get-PnpDeviceProperty -InstanceId $par -KeyName DEVPKEY_Device_BusReportedDeviceDesc).Data
+    $gp = [string](Get-PnpDeviceProperty -InstanceId $par -KeyName DEVPKEY_Device_Parent).Data
+    if ($gp -like 'USB\*') { $top = $gp }
+    if (-not $desc) { $desc = [string](Get-PnpDeviceProperty -InstanceId $top -KeyName DEVPKEY_Device_BusReportedDeviceDesc).Data }
+  }
+  if (($desc -match 'mouse') -and ($desc -notmatch 'keyboard|kbd')) { continue }
+  if ($seenKb.ContainsKey($top)) { continue }
+  $seenKb[$top] = $true
+  $conn = 'Other'
+  if (($id -match 'BTH') -or ($par -match 'BTH')) { $conn = 'Bluetooth' }
+  elseif ($par -like 'USB\*') { $conn = 'USB' }
+  elseif ($id -match 'PNP0303|PS2|ACPI|^HID\\') { $conn = 'Built-in' }
+  $nm = $desc
+  if (-not $nm) { $nm = [string]$k.FriendlyName }
+  $vid = $null; $pid2 = $null
+  if (($top + ' ' + $id) -match 'VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})') { $vid = $Matches[1].ToUpper(); $pid2 = $Matches[2].ToUpper() }
+  $kbs += @{ name = $nm; connection = $conn; vid = $vid; pid = $pid2 }
+}
+# Monitors, from what each one tells Windows about itself (EDID): maker code, model, serial, week and year, size. The cable type is only
+# trusted when it says HDMI, DisplayPort, DVI or built-in: Windows often answers "VGA" for everything else.
+function Txt($a) { if ($a) { (($a | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) -join '').Trim() } else { '' } }
+$conns = @{}
+foreach ($c in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorConnectionParams)) { $conns[[string]$c.InstanceName] = [int64]$c.VideoOutputTechnologyType }
+$sizes = @{}
+foreach ($b in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams)) { $sizes[[string]$b.InstanceName] = @($b.MaxHorizontalImageSize, $b.MaxVerticalImageSize) }
+$mons = @()
+foreach ($m in @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID)) {
+  $inst = [string]$m.InstanceName
+  $link = $null
+  switch ($conns[$inst]) { 4 { $link = 'DVI' } 5 { $link = 'HDMI' } 10 { $link = 'DisplayPort' } 11 { $link = 'Built-in' } 6 { $link = 'Built-in' } 2147483648 { $link = 'Built-in' } 15 { $link = 'Wireless' } }
+  $inch = $null
+  $sz = $sizes[$inst]
+  if ($sz -and $sz[0] -gt 0 -and $sz[1] -gt 0) { $inch = [math]::Round([math]::Sqrt([math]::Pow($sz[0], 2) + [math]::Pow($sz[1], 2)) / 2.54, 0) }
+  $ser = Txt $m.SerialNumberID
+  if ($ser -match '^0*$') { $ser = $null }
+  $mons += @{ name = (Txt $m.UserFriendlyName); maker = (Txt $m.ManufacturerName); code = (Txt $m.ProductCodeID); serial = $ser; year = [int]$m.YearOfManufacture; week = [int]$m.WeekOfManufacture; inches = $inch; connection = $link }
+}
 $installed = $null; if ($os.InstallDate) { $installed = $os.InstallDate.ToString('yyyy-MM-dd') }
 $boot = $null; if ($os.LastBootUpTime) { $boot = $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm') }
 $domain = 'Workgroup: ' + $cs.Domain; if ($cs.PartOfDomain) { $domain = [string]$cs.Domain }
@@ -162,7 +263,7 @@ $hw = @{
   os = $os.Caption; osVersion = $os.Version; osBuild = $os.BuildNumber; osArch = $os.OSArchitecture; installDate = $installed; lastBoot = $boot
   domain = $domain; user = $env:USERNAME
   cpu = @{ name = $cpu.Name; cores = $cpu.NumberOfCores; threads = $cpu.NumberOfLogicalProcessors; mhz = $cpu.MaxClockSpeed }
-  ramGb = (Gb $cs.TotalPhysicalMemory); ramModules = $ram; disks = $disks; volumes = $vols; gpus = $gpus; nics = $nics
+  ramGb = (Gb $cs.TotalPhysicalMemory); ramModules = $ram; disks = $disks; volumes = $vols; gpus = $gpus; nics = $nics; mice = $mice; keyboards = $kbs; monitors = $mons
   battery = [bool](Get-CimInstance Win32_Battery)
 }
 $json = @{ token = $token; hw = $hw } | ConvertTo-Json -Depth 6 -Compress

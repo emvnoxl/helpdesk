@@ -6,7 +6,7 @@ import { applySystem } from "./system";
    ONE stream per path no matter how many components listen. A slow poll stays in each screen as a safety net (a proxy that buffers
    streams, a laptop waking from sleep): the screens still work, just not instantly. */
 
-export type LiveEvent = "change" | "audit" | "open" | "call" | "typing";
+export type LiveEvent = "change" | "audit" | "open" | "call" | "typing" | "presence";
 type LiveData = { ticket?: number; name?: string; staff?: boolean };
 type Handler = (event: LiveEvent, data: LiveData) => void;
 interface Hub { es: EventSource | null; handlers: Set<Handler>; timer: number; opened: boolean }
@@ -36,6 +36,7 @@ function connect(path: string, hub: Hub) {
   };
   es.addEventListener("change", fire("change"));
   es.addEventListener("audit", fire("audit"));
+  es.addEventListener("presence", fire("presence")); // someone arrived or left (admin People / Computers)
   es.addEventListener("typing", fire("typing")); // someone is typing on a ticket (TicketView)
   es.addEventListener("call", fire("call")); // someone is ringing, answered or hung up (Calls.tsx)
   es.addEventListener("system", (e) => { try { applySystem(JSON.parse((e as MessageEvent).data || "{}")); } catch { /* ignore */ } }); // update announced / server restarting

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "./api";
-import { type Check, type DeviceData, DeviceView, deviceTitle, healthChecks, kindOf } from "./DeviceCard";
+import { type Check, type DeviceData, DeviceView, deviceTitle, healthChecks, kindOf, mouseLabel, monitorLabel } from "./DeviceCard";
 import { useLive } from "./live";
 import { field } from "./ui";
 
@@ -39,16 +39,20 @@ function group(rows: AssetDevice[]): Asset[] {
 const CHIP = { bad: "bg-red-50 text-red-800 ring-red-300", warn: "bg-amber-50 text-amber-900 ring-amber-400", ok: "bg-green-50 text-green-800 ring-green-300", info: "bg-stone-100 text-neutral-600 ring-stone-300" } as const;
 const csvCell = (v: unknown) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
 
-export function Assets({ onExpired }: { onExpired: () => void }) {
+export function Assets({ onExpired, initialQuery = "" }: { onExpired: () => void; initialQuery?: string }) {
   const [rows, setRows] = useState<AssetDevice[] | null>(null);
   const [err, setErr] = useState("");
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQuery); // People > Computers arrives with the person's email here
+  const [here, setHere] = useState<Set<string>>(new Set()); // emails of people who have the helpdesk open right now
   const [filter, setFilter] = useState<Filter>("all");
   const [openKey, setOpenKey] = useState<string | null>(null);
 
   const load = useCallback(() => api<AssetDevice[]>("/admin/assets").then((r) => { setRows(r); setErr(""); }, (e) => ((e as ApiError).status === 401 ? onExpired() : setErr((e as Error).message))), [onExpired]);
   useEffect(() => void load(), [load]);
   useLive("/staff/stream", () => void load()); // a hardware report arriving shows up by itself
+  const loadHere = useCallback(() => api<{ email: string }[]>("/admin/people/online").then((r) => setHere(new Set(r.map((x) => x.email))), () => undefined), []);
+  useEffect(() => { void loadHere(); const t = setInterval(() => void loadHere(), 30_000); return () => clearInterval(t); }, [loadHere]);
+  useLive("/staff/stream", () => { void loadHere(); }, ["presence", "open"]);
 
   const all = useMemo(() => group(rows ?? []), [rows]);
   const computers = all.filter((a) => kindOf(a.d) !== "Phone");
@@ -61,14 +65,14 @@ export function Assets({ onExpired }: { onExpired: () => void }) {
   const needle = q.trim().toLowerCase();
   const shown = all
     .filter((a) => (filter === "attention" ? a.level === "bad" || a.level === "warn" : filter === "noreport" ? !a.d.hardware && kindOf(a.d) !== "Phone" : filter === "win10" ? isWin10(a) : true))
-    .filter((a) => !needle || [deviceTitle(a.d), a.d.hardware?.name, serialOf(a.d), osOf(a.d), ...a.people.flatMap((p) => [p.name, p.email])].some((v) => String(v ?? "").toLowerCase().includes(needle)))
+    .filter((a) => !needle || [deviceTitle(a.d), a.d.hardware?.name, serialOf(a.d), osOf(a.d), ...(a.d.hardware?.mice ?? []).map((m: any) => m.name), ...(a.d.hardware?.keyboards ?? []).map((m: any) => m.name), ...(a.d.hardware?.monitors ?? []).flatMap((m: any) => [monitorLabel(m), m.serial]), ...a.people.flatMap((p) => [p.name, p.email])].some((v) => String(v ?? "").toLowerCase().includes(needle)))
     .sort((a, b) => ({ bad: 0, warn: 1, info: 2, ok: 3 })[a.level] - ({ bad: 0, warn: 1, info: 2, ok: 3 })[b.level] || b.d.last_seen - a.d.last_seen);
 
   const download = () => {
-    const head = ["Computer name", "Make and model", "Serial number", "Type", "Used by", "Email", "System", "Processor", "Memory (GB)", "Free disk (GB)", "Disk size (GB)", "Last seen", "Hardware report", "Needs attention", "Tickets"];
+    const head = ["Computer name", "Make and model", "Serial number", "Mouse", "Keyboard", "Monitors", "Type", "Used by", "Email", "System", "Processor", "Memory (GB)", "Free disk (GB)", "Disk size (GB)", "Last seen", "Hardware report", "Needs attention", "Tickets"];
     const lines = shown.map((a) => {
       const h = a.d.hardware, f = freeOf(a.d);
-      return [h?.name, deviceTitle(a.d), serialOf(a.d), kindOf(a.d), a.people.map((p) => p.name).join("; "), a.people.map((p) => p.email).join("; "), osOf(a.d), h?.cpu?.name, h?.ramGb, f?.free, f?.gb, when(a.d.last_seen), when(a.d.hardware_at),
+      return [h?.name, deviceTitle(a.d), serialOf(a.d), (h?.mice ?? []).map((m: any) => mouseLabel(m)).join("; "), (h?.keyboards ?? []).map((m: any) => mouseLabel(m)).join("; "), (h?.monitors ?? []).map((m: any) => monitorLabel(m)).join("; "), kindOf(a.d), a.people.map((p) => p.name).join("; "), a.people.map((p) => p.email).join("; "), osOf(a.d), h?.cpu?.name, h?.ramGb, f?.free, f?.gb, when(a.d.last_seen), when(a.d.hardware_at),
         a.checks.filter((c) => c.level === "bad" || c.level === "warn").map((c) => c.title).join("; "), a.tickets].map(csvCell).join(",");
     });
     const url = URL.createObjectURL(new Blob(["﻿" + [head.map(csvCell).join(","), ...lines].join("\r\n")], { type: "text/csv;charset=utf-8" }));
@@ -91,7 +95,7 @@ export function Assets({ onExpired }: { onExpired: () => void }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <input className={field + " !w-full sm:!w-72"} type="search" placeholder="Search name, model, serial, person…" aria-label="Search computers" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className={field + " !w-full sm:!w-72"} type="search" placeholder="Search name, model, serial, monitor, mouse, person…" aria-label="Search computers" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Show">
           {FILTERS.map(([id, label]) => (
             <button key={id} role="radio" aria-checked={filter === id} onClick={() => setFilter(id)}
@@ -123,7 +127,9 @@ export function Assets({ onExpired }: { onExpired: () => void }) {
                         <span className="text-xs text-neutral-500">{[kindOf(a.d), h?.name, serialOf(a.d) && `S/N ${serialOf(a.d)}`].filter(Boolean).join(" · ")}</span>
                       </button>
                     </td>
-                    <td><span className="block max-w-[14rem] truncate" title={a.people.map((p) => `${p.name} (${p.email})`).join("\n")}>{a.people[0]?.name}{a.people.length > 1 ? ` +${a.people.length - 1}` : ""}</span></td>
+                    <td><span className="block max-w-[14rem] truncate" title={a.people.map((p) => `${p.name} (${p.email})${here.has(p.email) ? " - online now" : ""}`).join("\n")}>
+                      {a.people.some((p) => here.has(p.email)) && <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-brand-green align-middle" role="img" aria-label="Online now" />}
+                      {a.people[0]?.name}{a.people.length > 1 ? ` +${a.people.length - 1}` : ""}</span></td>
                     <td className="text-neutral-600"><span className="block max-w-[11rem] truncate">{osOf(a.d) || "—"}</span></td>
                     <td className="text-neutral-600">{h?.ramGb ? `${Math.round(h.ramGb)} GB` : "—"}</td>
                     <td className="text-neutral-600">{f ? `${Math.round(f.free)} GB (${f.pct}%)` : "—"}</td>

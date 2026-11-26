@@ -13,6 +13,7 @@ const load = async (entry, name) => {
 };
 const M = await load("src/server/mailrender.ts", "mailrender");
 const S = await load("src/server/security.ts", "security");
+const SC = await load("src/server/reportschedule.ts", "reportschedule");
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = "") => { cond ? pass++ : fail++; console.log(`${cond ? "ok  " : "FAIL"}  ${name} ${cond ? "" : extra}`); };
@@ -93,6 +94,31 @@ ok("preview marks greeting, signature, steps and button with their template fiel
 const empty = M.sampleMail("created", { ...ctx({}, { contact: "", trust: "" }), preview: true }).html;
 ok("an empty optional line shows a clickable 'add' stand-in in the preview only", /data-edit="brand\.contact"[^>]*>\+ Add/.test(empty) && /data-edit="brand\.trust"[^>]*>\+ Add/.test(empty) && !/\+ Add/.test(M.sampleMail("created", ctx({}, { contact: "", trust: "" })).html));
 ok("every marker names a real template field", [...pvh.matchAll(/data-edit="([^"]+)"/g)].every(([, k]) => /^(brand\.\w+|kinds\.\w+\.\w+)$/.test(k)));
+
+// ---- the monthly report email ----
+const rd = { label: "October 2026", partial: false, kpis: { created: 64, resolved: 58, closed: 51, open_end: 9, old_open_end: 2, median_first_response_h: 0.6, median_resolution_h: 5.5, sla_pct: 92.3, sla_measured: 52, csat_pct: 88.9, rated: 18 }, prev_created: 52, categories: [{ name: "Printing", n: 19, share: 29.7, avg_resolution_h: 3.2 }, { name: "A&B <i>", n: 3, share: 4.7, avg_resolution_h: 60 }], priorities: [{ name: "urgent", n: 4, avg_resolution_h: 1.9, sla_pct: 100 }, { name: "low", n: 0, avg_resolution_h: null, sla_pct: null }], summary: "In October 2026 the helpdesk received 64 tickets." };
+m = M.composeReport({ name: "Kofi Mensah", email: "boss@example.com" }, rd, ctx());
+ok("report: subject, greeting and the numbers are there", m.subject === "Fortress Oil & Gas Helpdesk report for October 2026" && /^Hi Kofi,/.test(m.text) && /Tickets raised: 64 \(up 23% on last month\)/.test(m.text) && /Resolved: 58 \(51 closed\)/.test(m.text) && /First reply \(typical\): 36 min/.test(m.text) && /Time to fix \(typical\): 5.5 h/.test(m.text) && /Met their target time: 92.3% \(of 52 finished\)/.test(m.text) && /Said it was fixed: 88.9% \(of 18 answers\)/.test(m.text), m.text.slice(0, 500));
+ok("report: categories and priorities are listed (an empty priority is left out), long fixes read as days", /Busiest categories/.test(m.text) && /- Printing \| 19 \| 29.7% \| 3.2 h/.test(m.text) && /By priority/.test(m.text) && /- Urgent \| 4/.test(m.text) && !/- Low/.test(m.text) && /2.5 days/.test(m.text), m.text);
+ok("report: a category name can't inject HTML", !/<i>/.test(m.html) && /A&#38;B &#60;i&#62;/.test(m.html));
+ok("report: it has the signature, the genuine-message block and a button to the helpdesk", /Kind regards,/.test(m.text) && /A genuine message from/.test(m.text) && /Open the full report: https:\/\/helpdesk\.example\.com\/admin/.test(m.text));
+ok("report: someone with no name (a typed address) is greeted as 'there'", /^Hi there,/.test(M.composeReport({ name: "", email: "x@y.com" }, rd, ctx()).text));
+ok("report: a month in progress says so", /report for October 2026 \(so far\)/.test(M.composeReport({ name: "A", email: "a@b.com" }, { ...rd, partial: true }, ctx()).subject));
+ok("report: the wording can be changed like any other email", M.composeReport({ name: "A", email: "a@b.com" }, rd, { ...ctx(), t: M.merge({ kinds: { report: { subject: "Numbers for {month}", intro: "Hello **{name}**" } } }) }).subject === "Numbers for October 2026");
+ok("report: no earlier month means no comparison", !/on last month/.test(M.composeReport({ name: "A", email: "a@b.com" }, { ...rd, prev_created: null }, ctx()).text));
+
+// ---- when the monthly report goes out (the date picker's arithmetic) ----
+const T = (str) => SC.parseLocal(str);
+ok("schedule: a picked date and time becomes UTC seconds and back", T("2026-12-05T08:30") === Date.UTC(2026, 11, 5, 8, 30) / 1000 && SC.toLocal(T("2026-12-05T08:30")) === "2026-12-05T08:30");
+ok("schedule: rubbish, impossible dates and out-of-range years are refused", [undefined, null, 5, "", "tomorrow", "2026-12-05", "2026-12-05 08:30", "2026-02-30T08:00", "2026-13-01T08:00", "2026-12-05T25:00", "2026-12-05T08:61", "1999-01-01T00:00", "2101-01-01T00:00"].every((x) => T(x) === null));
+const iso = (t) => SC.toLocal(t);
+ok("schedule: the same day and time next month", iso(SC.addMonthKeepDay(T("2026-12-05T08:30"), 5)) === "2027-01-05T08:30" && iso(SC.addMonthKeepDay(T("2026-01-31T09:00"), 31)) === "2026-02-28T09:00");
+ok("schedule: a day a short month lacks falls on its last day, and comes back after (the anchor day is kept)", iso(SC.addMonthKeepDay(T("2026-01-31T09:00"), 31)) === "2026-02-28T09:00" && iso(SC.addMonthKeepDay(T("2026-02-28T09:00"), 31)) === "2026-03-31T09:00" && iso(SC.addMonthKeepDay(T("2028-01-31T09:00"), 31)) === "2028-02-29T09:00" && iso(SC.addMonthKeepDay(T("2026-04-30T09:00"), 31)) === "2026-05-31T09:00");
+ok("schedule: December rolls into January of the next year", iso(SC.addMonthKeepDay(T("2026-12-31T23:59"), 31)) === "2027-01-31T23:59");
+const nowS = T("2026-12-20T10:00");
+ok("schedule: after a send the next slot is in the future; after months of downtime it is ONE slot, not a backlog", iso(SC.nextAfter(T("2026-12-05T08:30"), 5, nowS)) === "2027-01-05T08:30" && iso(SC.nextAfter(T("2026-06-05T08:30"), 5, nowS)) === "2027-01-05T08:30" && iso(SC.nextAfter(T("2027-03-05T08:30"), 5, nowS)) === "2027-03-05T08:30");
+ok("schedule: the suggestion is the 1st of next month at 08:00 (also in December)", iso(SC.firstOfNextMonth(nowS)) === "2027-01-01T08:00" && iso(SC.firstOfNextMonth(T("2026-05-31T23:00"))) === "2026-06-01T08:00");
+ok("schedule: a report covers the month before its send date", SC.reportMonthFor(T("2026-12-05T08:30")) === "2026-11" && SC.reportMonthFor(T("2027-01-01T08:00")) === "2026-12" && SC.reportMonthFor(T("2026-03-31T23:59")) === "2026-02");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

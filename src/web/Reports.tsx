@@ -3,6 +3,7 @@ import { ApiError, api } from "./api";
 import { Heatmap, Panel } from "./viz";
 import { btn, field } from "./ui";
 import { useTheme } from "./theme";
+import { useNotify } from "./notify";
 
 /* Admin > Reports: pick a month, read the numbers and the smart analysis, download the tickets as CSV, or print / save as PDF. */
 
@@ -101,6 +102,27 @@ export function Reports({ onExpired }: { onExpired: () => void }) {
   const [rep, setRep] = useState<Report | null>(null);
   const [err, setErr] = useState("");
   const { mode, toggle } = useTheme();
+  const { toast, confirm } = useNotify();
+  const [mailing, setMailing] = useState(false);
+
+  // Send the month on screen to the people chosen under System > Report email.
+  const emailIt = async () => {
+    if (!rep) return;
+    setMailing(true);
+    try {
+      const cfg = await api<{ recipient_count: number }>("/admin/report-email");
+      if (!cfg.recipient_count) { toast("Choose who gets it under System > Report email first.", "info", "No one to send it to"); setMailing(false); return; }
+      const yes = await confirm({ title: `Email the ${rep.label} report to ${cfg.recipient_count} ${cfg.recipient_count === 1 ? "person" : "people"}?`, body: "It goes to everyone chosen under System > Report email, now. The email holds totals only (no ticket titles, no names).", confirmLabel: "Send it" });
+      if (yes) {
+        const r = await api<{ sent: number; failed: { email: string }[] }>("/admin/report-email/send", { method: "POST", json: { month: rep.month, to: "saved" } });
+        toast(r.failed.length ? `Sent to ${r.sent}; ${r.failed.length} failed.` : `Sent to ${r.sent} ${r.sent === 1 ? "person" : "people"}.`, r.failed.length ? "error" : "success", "Report sent");
+      }
+    } catch (e) {
+      if ((e as ApiError).status === 401) onExpired();
+      else toast((e as Error).message, "error", "Not sent");
+    }
+    setMailing(false);
+  };
 
   const load = useCallback(async (m: string) => {
     try {
@@ -137,6 +159,7 @@ export function Reports({ onExpired }: { onExpired: () => void }) {
         <button className="rounded-lg border border-stone-300 px-3 py-2 text-sm font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={idx <= 0} onClick={() => setMonth(rep.months[idx - 1]!)} aria-label="Next month">Later →</button>
         <span className="ml-auto flex flex-wrap gap-2">
           <a className={btn + " no-underline"} href={`/api/admin/reports/tickets.csv?month=${rep.month}`} download>Download tickets (CSV)</a>
+          <button className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={mailing} onClick={() => void emailIt()}>{mailing ? "Working…" : "Email this report"}</button>
           <button className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-stone-100" onClick={print}>Print / save as PDF</button>
         </span>
       </div>

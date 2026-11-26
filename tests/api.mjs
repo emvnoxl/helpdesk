@@ -701,13 +701,23 @@ ok("…or download them (404)", r.code === 404);
   x = await req("GET", "/api/devices/script.ps1");
   ok("no link at all is refused too", x.code === 410);
 
-  const hw = { name: "FG-LAPTOP-07", manufacturer: "Dell Inc.", model: "Latitude 5440", serial: "7K4Q9Z3", biosVersion: "1.12.0", chassis: "Laptop", os: "Microsoft Windows 11 Pro", osVersion: "10.0.22631", osBuild: "22631", osArch: "64-bit", installDate: "2024-03-02", lastBoot: "2026-11-13 08:02", domain: "WORKGROUP", user: "ama", cpu: { name: "13th Gen Intel(R) Core(TM) i5-1335U", cores: 10, threads: 12, mhz: 1300 }, ramGb: 16, ramModules: [{ gb: 8, mhz: 5200 }, { gb: 8, mhz: 5200 }], disks: [{ model: "NVMe KIOXIA 512GB", gb: 476.9, type: "SSD" }], volumes: [{ drive: "C:", gb: 475.7, freeGb: 210.4 }], gpus: [{ name: "Intel(R) Iris(R) Xe Graphics", gb: 0.1, driver: "31.0.101.4502" }], nics: [{ name: "Intel Wi-Fi 6E AX211", mac: "AA:BB:CC:DD:EE:FF", ips: ["192.168.1.44"] }], battery: true, password: "hunter2", extra: { x: 1 } };
+  const hw = { name: "FG-LAPTOP-07", manufacturer: "Dell Inc.", model: "Latitude 5440", serial: "7K4Q9Z3", biosVersion: "1.12.0", chassis: "Laptop", os: "Microsoft Windows 11 Pro", osVersion: "10.0.22631", osBuild: "22631", osArch: "64-bit", installDate: "2024-03-02", lastBoot: "2026-11-13 08:02", domain: "WORKGROUP", user: "ama", cpu: { name: "13th Gen Intel(R) Core(TM) i5-1335U", cores: 10, threads: 12, mhz: 1300 }, ramGb: 16, ramModules: [{ gb: 8, mhz: 5200 }, { gb: 8, mhz: 5200 }], disks: [{ model: "NVMe KIOXIA 512GB", gb: 476.9, type: "SSD" }], volumes: [{ drive: "C:", gb: 475.7, freeGb: 210.4 }], gpus: [{ name: "Intel(R) Iris(R) Xe Graphics", gb: 0.1, driver: "31.0.101.4502" }], nics: [{ name: "Intel Wi-Fi 6E AX211", mac: "AA:BB:CC:DD:EE:FF", ips: ["192.168.1.44"] }], battery: true, mice: [{ name: "Wireless mouse -1k dongle", connection: "USB", vid: "373b", pid: "1085", evil: "x" }, { name: "Touchpad (ELAN0A05)", connection: "Built-in" }, { name: "x", connection: "Telepathy", vid: "zz" }], keyboards: [{ name: "USB-HID Keyboard", connection: "USB", vid: "0414", pid: "8104" }, { name: "Standard PS/2 Keyboard", connection: "Built-in", junk: 1 }], monitors: [{ name: "HP 527sa", maker: "hpn", code: "3a65", serial: "3CM4451C17", year: 2024, week: 45, inches: 27, connection: "HDMI", extra: "x" }, { name: "", maker: "BOEE", code: "zz", serial: "<b>1</b>", year: 1800, week: 99, inches: 3, connection: "VGA" }], password: "hunter2", extra: { x: 1 } };
   x = await req("POST", "/api/devices/inventory", { token: "garbage", hw }, jar());
   ok("a hardware report with a bad token is refused (401)", x.code === 401);
   x = await req("POST", "/api/devices/inventory", { token: tok, hw }, jar());
   ok("the script's report is accepted without any cookie", x.code === 200);
   const hwRow = dbq("select hardware, hardware_at from devices where device_key = ?", KEY)[0];
   ok("it is stored against that computer, minus anything unexpected", hwRow.hardware_at > 0 && JSON.parse(hwRow.hardware).model === "Latitude 5440" && !/hunter2|password|extra/.test(hwRow.hardware));
+  const mice = JSON.parse(hwRow.hardware).mice ?? [];
+  ok("mice are stored cleaned: ids upper-cased, unknown connection and bad ids dropped, nothing extra", mice.length === 3 && mice[0].vid === "373B" && mice[0].pid === "1085" && mice[0].connection === "USB" && !("evil" in mice[0]) && mice[1].connection === "Built-in" && mice[2].connection === undefined && mice[2].vid === undefined, JSON.stringify(mice));
+  const hwx = JSON.parse(hwRow.hardware);
+  ok("keyboards are stored cleaned, like mice", hwx.keyboards?.length === 2 && hwx.keyboards[0].vid === "0414" && hwx.keyboards[0].connection === "USB" && hwx.keyboards[1].connection === "Built-in" && !("junk" in hwx.keyboards[1]), JSON.stringify(hwx.keyboards));
+  ok("monitors are stored cleaned: maker and model codes upper-cased, size/year/week bounded, only known cable types, nothing extra",
+    hwx.monitors?.length === 2 && hwx.monitors[0].maker === "HPN" && hwx.monitors[0].code === "3A65" && hwx.monitors[0].serial === "3CM4451C17" && hwx.monitors[0].year === 2024 && hwx.monitors[0].week === 45 && hwx.monitors[0].inches === 27 && hwx.monitors[0].connection === "HDMI" && !("extra" in hwx.monitors[0])
+    && hwx.monitors[1].maker === undefined && hwx.monitors[1].code === undefined && hwx.monitors[1].year === undefined && hwx.monitors[1].week === undefined && hwx.monitors[1].inches === undefined && hwx.monitors[1].connection === undefined && hwx.monitors[1].serial === "<b>1</b>", JSON.stringify(hwx.monitors));
+  x = await req("GET", "/api/devices/script.ps1?t=" + tok);
+  ok("the script also reads keyboards and monitors (EDID), and says what it sends", x.json.includes("Get-PnpDevice -Class Keyboard") && x.json.includes("WmiMonitorID") && x.json.includes("keyboards = $kbs; monitors = $mons"));
+  ok("the script reads the mouse from the USB/Bluetooth device and skips a keyboard's pointer controls", /Get-PnpDevice -Class Mouse/.test(x.json) && /BusReportedDeviceDesc/.test(x.json) && x.json.includes("-match 'keyboard'") && x.json.includes("mice = $mice"));
   x = await req("POST", "/api/devices/inventory", { token: tok, hw: { model: "y".repeat(9000), disks: Array.from({ length: 100 }, () => ({ gb: 1 })), cpu: "no" } }, jar());
   const hw2 = JSON.parse(dbq("select hardware from devices where device_key = ?", KEY)[0].hardware);
   ok("oversized reports are cut down (model clipped, at most 8 disks, bad types dropped)", x.code === 200 && hw2.model.length <= 80 && hw2.disks.length <= 8 && hw2.cpu === undefined);
@@ -721,6 +731,25 @@ ok("…or download them (404)", r.code === 404);
   ok("admin sees each computer: browser details and the full hardware report", x.code === 200 && x.json.length === 2 && x.json.some((d) => d.hardware?.serial === "7K4Q9Z3" && d.browser?.cores === 16));
   x = await req("GET", `/api/admin/people/${dev.id}/devices`, undefined, GE);
   ok("agents can't open a person's computers (404)", x.code === 404);
+  // who is online: an open event stream means the person has the helpdesk open
+  x = await req("GET", "/api/admin/people/online", undefined, A);
+  ok("nobody from this test is online before a stream is open", x.code === 200 && !x.json.some((p) => p.id === dev.id));
+  const acOn = new AbortController();
+  const adminAc = new AbortController();
+  const adminStream = await fetch(BASE + "/api/staff/stream", { headers: { cookie: A.cookie }, signal: adminAc.signal });
+  const adminReader = adminStream.body.getReader();
+  let adminBuf = ""; const dec2 = new TextDecoder();
+  const pump = (async () => { try { for (;;) { const c = await adminReader.read(); if (c.done) break; adminBuf += dec2.decode(c.value); } } catch { /* aborted */ } })();
+  const onStream = await fetch(BASE + "/api/stream", { headers: { cookie: DV.cookie }, signal: acOn.signal });
+  await new Promise((r) => setTimeout(r, 400));
+  x = await req("GET", "/api/admin/people/online", undefined, A);
+  ok("a person with the helpdesk open shows as online (name and email only)", onStream.status === 200 && x.code === 200 && x.json.some((p) => p.id === dev.id && p.email === `dev.user@${DOMAIN}`) && Object.keys(x.json[0]).sort().join() === "email,id,name", JSON.stringify(x.json));
+  ok("admins' screens are nudged when someone arrives (a presence event)", /event: presence/.test(adminBuf), adminBuf.slice(0, 200));
+  x = await req("GET", "/api/admin/people/online", undefined, GE);
+  ok("agents can't see who is online (404)", x.code === 404);
+  x = await req("GET", "/api/admin/people/online", undefined, jar());
+  ok("signed-out visitors can't either", x.code === 401);
+  acOn.abort(); adminAc.abort(); await pump;
   x = await req("GET", "/api/me", undefined, DV);
   ok("a person's own session never exposes serial numbers or addresses", !/7K4Q9Z3|AA:BB/.test(JSON.stringify(x.json)));
   const lg = (await req("GET", "/api/admin/activity?limit=100", undefined, A)).json.rows;
@@ -2013,7 +2042,7 @@ const ST = "/api/staff/tickets";
   ok("templates: an agent can't reach them (404)", x.code === 404 && (await req("PUT", ET, {}, GE)).code === 404);
   ok("templates: nobody signed out can (401)", (await req("GET", ET, undefined, jar())).code === 401);
   x = await req("GET", ET, undefined, A);
-  ok("templates: the editor gets all seven emails, the defaults and the placeholders each accepts", x.code === 200 && x.json.kinds.length === 7 && x.json.kinds.every((k) => k.vars.includes("team") && k.fields.length >= 3) && x.json.templates.brand.team === "Fortress IT Team" && x.json.customised === 0 && x.json.custom_logo === false, JSON.stringify(x.json.kinds.map((k) => k.id)));
+  ok("templates: the editor gets all eight emails, the defaults and the placeholders each accepts", x.code === 200 && x.json.kinds.length === 8 && x.json.kinds.every((k) => k.vars.includes("team") && k.fields.length >= 3) && x.json.templates.brand.team === "Fortress IT Team" && x.json.customised === 0 && x.json.custom_logo === false, JSON.stringify(x.json.kinds.map((k) => k.id)));
 
   // the verify link needs the helpdesk's address
   const sett = (await req("GET", "/api/admin/system/settings", undefined, A)).json;
@@ -2088,6 +2117,59 @@ const ST = "/api/staff/tickets";
   x = await req("PUT", ET, { brand: {}, kinds: {} }, A);
   ok("templates: everything back to the defaults", x.code === 200 && (await req("GET", ET, undefined, A)).json.customised === 0 && JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).brand !== undefined && Object.keys(JSON.parse(dbq("select value from settings where key = 'email_templates'")[0].value).kinds).length === 0);
   await req("PUT", "/api/admin/system/settings", { address: { app_url: sett.address.app_url, alt_urls: sett.address.alt_urls, trust_proxy: sett.address.trust_proxy } }, A);
+}
+
+{ // The monthly report by email: who gets it, validation, sending, and what is (not) in it
+  const RE = "/api/admin/report-email";
+  const until = async (fn, ms = 8000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await new Promise((r) => setTimeout(r, 150)); } return fn(); };
+  let x = await req("GET", RE, undefined, GE);
+  ok("report email: agents can't reach it (404) and nor can signed-out visitors (401)", x.code === 404 && (await req("PUT", RE, {}, GE)).code === 404 && (await req("POST", RE + "/send", {}, GE)).code === 404 && (await req("GET", RE, undefined, jar())).code === 401);
+  x = await req("GET", RE, undefined, A);
+  ok("report email: off by default, all admins ticked, the staff to pick from, and the month it would report", x.code === 200 && x.json.enabled === false && x.json.admins === true && x.json.repeat === true && /^\d{4}-\d{2}-01T08:00$/.test(x.json.suggestion) && x.json.send_at === x.json.suggestion && x.json.staff.some((u) => u.email === ADMIN) && /^\d{4}-\d{2}$/.test(x.json.report_month) && x.json.next_at === null, JSON.stringify(x.json).slice(0, 200));
+  const soon = (d) => new Date(Date.now() + d * 86400000).toISOString().slice(0, 16);
+  const FUT = soon(40).slice(0, 11) + "08:30";
+  const base = { enabled: true, send_at: FUT, repeat: true, admins: true, staff_ids: [], custom: [] };
+  ok("report email: no date, a rubbish date, an impossible one, or one in the past is refused", (await req("PUT", RE, { ...base, send_at: "" }, A)).code === 400 && (await req("PUT", RE, { ...base, send_at: "next tuesday" }, A)).code === 400 && (await req("PUT", RE, { ...base, send_at: "2026-02-31T08:00" }, A)).code === 400 && (await req("PUT", RE, { ...base, send_at: "2026-13-01T08:00" }, A)).code === 400 && (await req("PUT", RE, { ...base, send_at: soon(-2) }, A)).code === 400);
+  ok("report email: a past date is fine while it is off (nothing would be sent)", (await req("PUT", RE, { ...base, enabled: false, send_at: soon(-2) }, A)).code === 200);
+  x = await req("PUT", RE, { ...base, custom: ["not an email"] }, A);
+  ok("report email: a bad address is refused and named", x.code === 400 && /not an email/.test(x.json.error), JSON.stringify(x.json));
+  ok("report email: header injection in an address is refused", (await req("PUT", RE, { ...base, custom: ["a@b.com\r\nBcc: evil@x.com"] }, A)).code === 400 && (await req("PUT", RE, { ...base, custom: ["a@b.com, c@d.com"] }, A)).code === 400);
+  ok("report email: more than 20 extra addresses is refused", (await req("PUT", RE, { ...base, custom: Array.from({ length: 21 }, (_, i) => `p${i}@example.com`) }, A)).code === 400);
+  ok("report email: switching it on with nobody chosen is refused", (await req("PUT", RE, { ...base, admins: false }, A)).code === 400 && (await req("GET", RE, undefined, A)).json.enabled === false);
+  const esi = dbq("select id from users where email = ?", "esi.agent@" + DOMAIN)[0].id;
+  x = await req("PUT", RE, { ...base, staff_ids: [esi, 999999], custom: ["boss@example.com", "BOSS@example.com", "director@othercompany.org"] }, A);
+  ok("report email: saved, with the next send at exactly the chosen moment (Ghana time = UTC)", x.code === 200 && x.json.next_at === Date.parse(FUT + ":00Z") / 1000, JSON.stringify({ r: x.json, FUT }));
+  x = await req("GET", RE, undefined, A);
+  const admins = dbq("select count(*) n from users where role = 'admin' and active = 1 and email not like '%@helpdesk.invalid'")[0].n;
+  ok("report email: an unknown colleague is dropped, the same address in two cases counts once, and the count is right", x.json.enabled && x.json.send_at === FUT && x.json.repeat === true && x.json.day === Number(FUT.slice(8, 10)) && x.json.covers === (() => { const d = new Date(Date.parse(FUT + ":00Z")); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7); })() && JSON.stringify(x.json.staff_ids) === JSON.stringify([esi]) && x.json.recipient_count === admins + 1 + 2, JSON.stringify({ n: x.json.recipient_count, admins }));
+  ok("report email: the save is in the activity log", dbq("select count(*) n from audit_log where action = 'report.settings'")[0].n >= 1);
+
+  // a ticket with a title nobody outside IT should see in a report
+  const rj = jar();
+  await req("POST", "/api/identify", { name: "Report Person", email: `report.person@${DOMAIN}`, new_pin: "735194" }, rj);
+  await req("POST", "/api/tickets", { title: "ZZ-SECRET-TITLE-9731", description: "private words ZZ-PRIVATE-BODY", category_id: 9 }, rj);
+
+  const cur = new Date().toISOString().slice(0, 7);
+  ok("report email: a month in the future, or rubbish, is refused", (await req("POST", RE + "/send", { month: "2099-01", to: "me" }, A)).code === 400 && (await req("POST", RE + "/send", { month: "last", to: "me" }, A)).code === 400 && (await req("POST", RE + "/preview", { month: "2099-01" }, A)).code === 400);
+  let mark = log.length;
+  x = await req("POST", RE + "/send", { month: cur, to: "me" }, A);
+  ok("report email: 'send me a test' goes to the admin's own address only", x.code === 200 && x.json.sent === 1 && await until(() => log.slice(mark).includes("[mail] to=" + ADMIN + " subject=\"")) && !log.slice(mark).includes("boss@example.com"), JSON.stringify(x.json));
+  const m1 = log.slice(mark).split("[mail] to=").find((m) => m.startsWith(ADMIN)) ?? "";
+  ok("report email: the subject names the helpdesk and the month; the body has the numbers, the signature and the genuine-message block", /report for /.test(m1.split("::")[0]) && /Tickets raised: \d+/.test(m1) && /Busiest categories/.test(m1) && /Kind regards,/.test(m1) && /A genuine message from/.test(m1), m1.slice(0, 400));
+  ok("report email: it holds totals only: no ticket title, no description, no requester name", !/ZZ-SECRET-TITLE|ZZ-PRIVATE-BODY|Report Person|report\.person@/.test(m1) && /Tickets raised: [1-9]/.test(m1), m1.slice(0, 300));
+  x = await req("POST", RE + "/preview", { month: cur }, A);
+  ok("report email: the preview is the real email for that month (logo inlined, no ticket titles)", x.code === 200 && /src="data:image\/png;base64,/.test(x.json.html) && /Tickets raised/.test(x.json.html) && !/ZZ-SECRET-TITLE/.test(x.json.html) && /data-edit="kinds\.report\.intro"/.test(x.json.html));
+
+  mark = log.length;
+  x = await req("POST", RE + "/send", { month: cur, to: "saved" }, A);
+  const want = (await req("GET", RE, undefined, A)).json.recipient_count;
+  await until(() => log.slice(mark).split("[mail] to=").length - 1 >= want);
+  const sent = log.slice(mark).split("[mail] to=").slice(1).map((m) => m.split(" ")[0]);
+  ok("report email: 'send to everyone' reaches every chosen person once, including the typed addresses", x.code === 200 && x.json.sent === want && new Set(sent).size === sent.length && sent.includes("boss@example.com") && sent.includes("director@othercompany.org") && sent.includes(ADMIN) && sent.includes("esi.agent@" + DOMAIN), JSON.stringify({ sent, want }));
+  const last = (await req("GET", RE, undefined, A)).json.last;
+  ok("report email: the last send is remembered, and it is in the activity log", last && last.sent === want && last.month === cur && dbq("select count(*) n from audit_log where action = 'report.emailed'")[0].n >= 2);
+  ok("report email: the editable wording of the monthly email is stored like the others", (await req("GET", "/api/admin/email-templates", undefined, A)).json.kinds.some((k) => k.id === "report"));
+  ok("report email: switched off again", (await req("PUT", RE, { ...base, enabled: false }, A)).code === 200 && (await req("GET", RE, undefined, A)).json.next_at === null);
 }
 
 { // Admin: disable and delete clients

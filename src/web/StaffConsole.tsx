@@ -46,6 +46,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
   const [d, setD] = useState<any>(null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<Tab>(admin ? "dashboard" : "mine");
+  const [pcFor, setPcFor] = useState(""); // People > "Computers" jumps here with the person's email in the search box
   const { info: upd } = useUpdateInfo(!!admin);
   const [busy, setBusy] = useState<number | null>(null);
 
@@ -114,7 +115,7 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <SlidingTabs<Tab> variant="pill" label="Sections" value={tab} onChange={setTab} tabs={tabs} />
+        <SlidingTabs<Tab> variant="pill" label="Sections" value={tab} onChange={(t) => { if (t !== "assets") setPcFor(""); setTab(t); }} tabs={tabs} />
         <span className="ml-auto flex items-center gap-3">
           <AnnounceButton />
           <button className="text-sm font-semibold text-neutral-500 hover:text-fg" onClick={() => void load()}>Refresh</button>
@@ -194,8 +195,8 @@ export function StaffConsole({ role, meId, open, onExpired }: { role: "agent" | 
         {tab === "library" && <Library admin={admin} open={open} onExpired={onExpired} />}
         {tab === "reports" && admin && <Reports onExpired={onExpired} />}
         {tab === "activity" && admin && <ActivityLog open={open} onExpired={onExpired} />}
-        {tab === "people" && admin && <PeoplePanel onExpired={onExpired} />}
-        {tab === "assets" && admin && <Assets onExpired={onExpired} />}
+        {tab === "people" && admin && <PeoplePanel onExpired={onExpired} onShowComputers={(email) => { setPcFor(email); setTab("assets"); }} />}
+        {tab === "assets" && admin && <Assets key={pcFor} onExpired={onExpired} initialQuery={pcFor} />}
         {tab === "users" && admin && <UsersPanel meId={meId} onExpired={onExpired} />}
         {tab === "system" && admin && <SystemPanel onExpired={onExpired} />}
       </div>

@@ -1,34 +1,31 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "./api";
 import { useNotify } from "./notify";
-import { DevicePanel, type DeviceData, kindOf } from "./DeviceCard";
+import { useLive } from "./live";
 import { field } from "./ui";
 
 interface Person { id: number; name: string; email: string; active: number; last_login_at: number | null; created_at: number; has_pin: number; tickets: number; computers: number; reported: number }
 const when = (ts: number | null) => (ts ? new Date(ts * 1000).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "Never");
 
-/** Admin > People: the normal users, and a way to clear a forgotten PIN (they create a new one next time they sign in). */
-export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
+interface Here { id: number; name: string; email: string }
+const initials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("") || "?";
+
+/** Admin > People: the normal users, who is online right now, and a way to clear a forgotten PIN (they create a new one next time they sign in).
+    Their computers live under Computers: the count here opens that tab already searched for the person. */
+export function PeoplePanel({ onExpired, onShowComputers }: { onExpired: () => void; onShowComputers: (email: string) => void }) {
   const { toast, confirm } = useNotify();
   const [rows, setRows] = useState<Person[] | null>(null);
   const [q, setQ] = useState("");
   const [qNow, setQNow] = useState("");
   const [err, setErr] = useState("");
-  const [openId, setOpenId] = useState<number | null>(null);
-  const [devs, setDevs] = useState<Record<number, DeviceData[] | "loading">>({});
+  const [here, setHere] = useState<Here[] | null>(null);
+  const [onlyOnline, setOnlyOnline] = useState(false);
+  const onlineIds = useMemo(() => new Set((here ?? []).map((h) => h.id)), [here]);
 
-  async function toggle(p: Person) {
-    if (openId === p.id) return setOpenId(null);
-    setOpenId(p.id);
-    setDevs((d) => ({ ...d, [p.id]: "loading" }));
-    try {
-      const list = await api<DeviceData[]>(`/admin/people/${p.id}/devices`);
-      setDevs((d) => ({ ...d, [p.id]: list }));
-    } catch (e) {
-      setDevs((d) => ({ ...d, [p.id]: [] }));
-      toast((e as Error).message, "error", "Couldn't load their computers");
-    }
-  }
+  // Who has the helpdesk open: pushed by the server when someone arrives or leaves, with a slow poll as the safety net.
+  const loadHere = useCallback(() => api<Here[]>("/admin/people/online").then(setHere, () => undefined), []);
+  useEffect(() => { void loadHere(); const t = setInterval(() => void loadHere(), 30_000); return () => clearInterval(t); }, [loadHere]);
+  useLive("/staff/stream", () => { void loadHere(); }, ["presence", "open"]);
 
   useEffect(() => { const t = setTimeout(() => setQNow(q.trim()), 300); return () => clearTimeout(t); }, [q]);
   const load = useCallback(async () => {
@@ -41,6 +38,11 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
     }
   }, [qNow, onExpired]);
   useEffect(() => void load(), [load]);
+  useLive("/staff/stream", () => { void load(); }, ["change", "open"]);
+  const shownRows = useMemo(() => {
+    const list = (rows ?? []).filter((p) => !onlyOnline || onlineIds.has(p.id));
+    return [...list].sort((a, b) => Number(onlineIds.has(b.id)) - Number(onlineIds.has(a.id))); // stable: online first, the rest keep their order
+  }, [rows, onlyOnline, onlineIds]);
 
   async function reset(p: Person) {
     const yes = await confirm({
@@ -99,9 +101,39 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-extrabold">People</h2>
-        <p className="text-sm text-neutral-500">Everyone who has used the helpdesk as a normal user. Reset a forgotten PIN, disable someone who should no longer have access, or delete an account.</p>
+        <p className="text-sm text-neutral-500">Everyone who has used the helpdesk as a normal user. Reset a forgotten PIN, disable someone who should no longer have access, or delete an account. Their computers are under <b>Computers</b>.</p>
       </div>
-      <input className={field + " !w-full sm:!w-80"} type="search" placeholder="Search by name or email…" aria-label="Search people" value={q} onChange={(e) => setQ(e.target.value)} />
+
+      <section aria-label="Online now" className="rounded-2xl border border-stone-200 bg-surface p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5" aria-hidden><span className={`absolute inline-flex h-full w-full rounded-full bg-brand-green ${here?.length ? "animate-ping opacity-60 motion-reduce:animate-none" : "opacity-0"}`} /><span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${here?.length ? "bg-brand-green" : "bg-neutral-400"}`} /></span>
+          <h3 className="text-sm font-extrabold">Online now</h3>
+          <span className="rounded-full bg-fg/10 px-2 py-0.5 text-xs font-bold" aria-live="polite">{here ? here.length : "…"}</span>
+          <span className="text-xs text-neutral-500">using the helpdesk this minute (it has it open in a browser)</span>
+        </div>
+        {here && here.length > 0 ? (
+          <ul className="mt-3 flex flex-wrap gap-2">
+            {here.map((h) => (
+              <li key={h.id} className="flex items-center gap-2 rounded-full border border-stone-200 py-1 pl-1 pr-3 text-sm" title={h.email}>
+                <span className="relative grid h-7 w-7 place-items-center rounded-full bg-brand-green text-[11px] font-bold text-ink">{initials(h.name)}<span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--color-surface)] bg-brand-green" aria-hidden /></span>
+                <span className="font-semibold">{h.name}</span>
+              </li>
+            ))}
+          </ul>
+        ) : here ? <p className="mt-2 text-sm text-neutral-500">Nobody is using the helpdesk right now.</p> : null}
+      </section>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={field + " !w-full sm:!w-80"} type="search" placeholder="Search by name or email…" aria-label="Search people" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="flex gap-1.5" role="radiogroup" aria-label="Show">
+          {([[false, "Everyone"], [true, "Online now"]] as const).map(([v, label]) => (
+            <button key={label} role="radio" aria-checked={onlyOnline === v} onClick={() => setOnlyOnline(v)}
+              className={`rounded-full px-3.5 py-1.5 text-sm font-semibold ring-1 ring-inset transition-colors ${onlyOnline === v ? "bg-ink text-white ring-ink dark:bg-brand-green dark:text-ink dark:ring-brand-green" : "text-neutral-600 ring-stone-300 hover:bg-stone-100"}`}>
+              {label}{v && here ? <span className="ml-1 opacity-85">{here.length}</span> : null}
+            </button>
+          ))}
+        </div>
+      </div>
       {err && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{err}</p>}
       <div className="overflow-x-auto rounded-2xl border border-stone-200 bg-surface shadow-sm">
         <table className="w-full text-sm">
@@ -111,48 +143,36 @@ export function PeoplePanel({ onExpired }: { onExpired: () => void }) {
             </tr>
           </thead>
           <tbody>
-            {rows?.map((p) => (
-              <Fragment key={p.id}>
-                <tr className="border-t border-stone-200">
-                  <td className="p-3 font-medium">{p.name}{!p.active && <span className="ml-2 rounded-full bg-[#d92b33] px-2 py-0.5 text-xs font-bold text-white">Disabled</span>}</td>
-                  <td className="text-neutral-600">{p.email}</td>
-                  <td>{p.has_pin ? <span className="rounded-full bg-brand-green px-2 py-0.5 text-xs font-bold text-ink">Set</span> : <span className="rounded-full bg-brand-amber px-2 py-0.5 text-xs font-bold text-ink" title="Not set yet: the next person to sign in with this email will create it">Not set</span>}</td>
-                  <td>
-                    <button className="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 px-2.5 py-1 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.computers} aria-expanded={openId === p.id} onClick={() => void toggle(p)} title={p.computers ? "Show their computers" : "No computer has reported yet"}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
-                      {p.computers}{p.reported ? <span className="text-ok" title={`${p.reported} with a full hardware report`}> · {p.reported} full</span> : null}
-                      <span aria-hidden>{openId === p.id ? "▴" : "▾"}</span>
-                    </button>
-                  </td>
-                  <td>{p.tickets}</td>
-                  <td className="text-neutral-600">{when(p.last_login_at)}</td>
-                  <td className="pr-3 text-right">
-                    <div className="flex flex-wrap justify-end gap-1.5">
-                      <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.has_pin} onClick={() => void reset(p)}>Reset PIN</button>
-                      <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100" onClick={() => void setActive(p, !p.active)}>{p.active ? "Disable" : "Enable"}</button>
-                      <button className="rounded-lg border border-red-700/50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-700/10" onClick={() => { setKeep(true); setRemoving(p); }}>Delete</button>
-                    </div>
-                  </td>
-                </tr>
-                {openId === p.id && (
-                  <tr className="border-t border-stone-200 bg-stone-50">
-                    <td colSpan={7} className="p-4">
-                      {devs[p.id] === "loading" || !devs[p.id] ? (
-                        <p className="text-sm text-neutral-500">Loading…</p>
-                      ) : (devs[p.id] as DeviceData[]).length === 0 ? (
-                        <p className="text-sm text-neutral-500">No computer has reported yet.</p>
-                      ) : (
-                        <DevicePanel devices={devs[p.id] as DeviceData[]} />
-                      )}
-                      {(devs[p.id] as DeviceData[] | undefined)?.some?.((d) => !d.hardware && kindOf(d) !== "Phone") && (
-                        <p className="mt-3 text-xs text-neutral-500">Make, model, serial number, disks and exact memory aren't visible to a browser. Ask {p.name.split(" ")[0]} to open <b>Your account</b> in the helpdesk and choose <b>Send hardware details to IT</b>, once per computer.</p>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
+            {shownRows.map((p) => (
+              <tr key={p.id} className="border-t border-stone-200">
+                <td className="p-3 font-medium">
+                  <span className="inline-flex items-center gap-2">
+                    {onlineIds.has(p.id) && <span className="inline-flex items-center gap-1 rounded-full bg-brand-green/15 px-2 py-0.5 text-xs font-bold text-ok" title="Has the helpdesk open right now"><span className="h-1.5 w-1.5 rounded-full bg-brand-green" aria-hidden />Online</span>}
+                    {p.name}
+                  </span>
+                  {!p.active && <span className="ml-2 rounded-full bg-[#d92b33] px-2 py-0.5 text-xs font-bold text-white">Disabled</span>}
+                </td>
+                <td className="text-neutral-600">{p.email}</td>
+                <td>{p.has_pin ? <span className="rounded-full bg-brand-green px-2 py-0.5 text-xs font-bold text-ink">Set</span> : <span className="rounded-full bg-brand-amber px-2 py-0.5 text-xs font-bold text-ink" title="Not set yet: the next person to sign in with this email will create it">Not set</span>}</td>
+                <td>
+                  <button className="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 px-2.5 py-1 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.computers} onClick={() => onShowComputers(p.email)} title={p.computers ? "See their computers under Computers" : "No computer has reported yet"}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
+                    {p.computers}{p.reported ? <span className="text-ok" title={`${p.reported} with a full hardware report`}> · {p.reported} full</span> : null}
+                    <span aria-hidden>›</span>
+                  </button>
+                </td>
+                <td>{p.tickets}</td>
+                <td className="text-neutral-600">{onlineIds.has(p.id) ? <b className="text-ok">Now</b> : when(p.last_login_at)}</td>
+                <td className="pr-3 text-right">
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100 disabled:opacity-40" disabled={!p.has_pin} onClick={() => void reset(p)}>Reset PIN</button>
+                    <button className="rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-semibold hover:bg-stone-100" onClick={() => void setActive(p, !p.active)}>{p.active ? "Disable" : "Enable"}</button>
+                    <button className="rounded-lg border border-red-700/50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-700/10" onClick={() => { setKeep(true); setRemoving(p); }}>Delete</button>
+                  </div>
+                </td>
+              </tr>
             ))}
-            {rows && !rows.length && <tr><td className="p-8 text-center text-neutral-500" colSpan={7}>{qNow ? "Nobody matches that search." : "Nobody has signed in yet."}</td></tr>}
+            {rows && !shownRows.length && <tr><td className="p-8 text-center text-neutral-500" colSpan={7}>{onlyOnline ? "Nobody is online right now." : qNow ? "Nobody matches that search." : "Nobody has signed in yet."}</td></tr>}
             {!rows && <tr><td className="p-8 text-center text-neutral-500" colSpan={7}>Loading…</td></tr>}
           </tbody>
         </table>

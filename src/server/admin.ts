@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { type AppEnv, staffAuth } from "./auth";
 import { notifyUser } from "./notifications";
 import { audit } from "./audit";
-import { changed } from "./bus";
+import { changed, onlineRequesters } from "./bus";
 import { activity } from "./activity";
 import { shapeDevice } from "./devices";
 import { reports } from "./reports";
@@ -17,6 +17,7 @@ import { teams } from "./teams";
 import { automation } from "./automation";
 import { forms } from "./forms";
 import { emailTemplates } from "./mailtemplates";
+import { reportEmail } from "./reportmail";
 import { backups } from "./backup";
 import { hashPassword, randomPassword } from "./security";
 import { unlink } from "node:fs/promises";
@@ -39,6 +40,7 @@ const FORMER_USER = "former.user@helpdesk.invalid";
 admin.route("/board", dashboard);
 admin.route("/activity", activity);
 admin.route("/email-templates", emailTemplates); // the wording and look of the emails
+admin.route("/report-email", reportEmail); // the monthly report by email
 admin.route("/forms", forms); // the questions asked per category
 admin.route("/automation", automation); // housekeeping rules (auto-close)
 admin.route("/teams", teams); // alerts in a Teams channel
@@ -256,6 +258,17 @@ admin.get("/people", async (c) => {
     .bind(FORMER, FORMER_USER, ...(q ? [like, like] : []))
     .all();
   return c.json(results);
+});
+
+// Who has the helpdesk open right now (an event stream is connected). Not filtered or limited: it is the "online now" strip.
+admin.get("/people/online", async (c) => {
+  const ids = onlineRequesters();
+  if (!ids.length) return c.json([]);
+  const { results } = await db
+    .prepare(`SELECT id, name, email FROM users WHERE role = 'requester' AND active = 1 AND id IN (${ids.map(() => "?").join(",")}) ORDER BY name`)
+    .bind(...ids)
+    .all<{ id: number; name: string; email: string }>();
+  return c.json(results.filter((u) => u.email !== FORMER && u.email !== FORMER_USER));
 });
 
 admin.get("/people/:id{[0-9]+}/devices", async (c) => {

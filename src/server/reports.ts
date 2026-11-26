@@ -17,12 +17,12 @@ interface Row {
   rating: number | null; rating_comment: string | null;
 }
 
-const monthKey = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+export const monthKey = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 function range(month: string) {
   const [y, m] = month.split("-").map(Number) as [number, number];
   return { from: Math.floor(Date.UTC(y, m - 1, 1) / 1000), to: Math.floor(Date.UTC(y, m, 1) / 1000) };
 }
-function parseMonth(raw: string | undefined): string | null {
+export function parseMonth(raw: string | undefined): string | null {
   const cur = monthKey(new Date());
   const m = raw ?? cur;
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m) || m < "2020-01" || m > cur) return null;
@@ -102,9 +102,8 @@ const avgRes = (rs: Row[]) => {
   return x.length ? r1(mean(x)) : null;
 };
 
-reports.get("/", async (c) => {
-  const month = parseMonth(c.req.query("month"));
-  if (!month) return c.json({ error: "Pick a month in the form 2026-10 (not in the future)." }, 400);
+/** A month's numbers and smart analysis (the Reports page, and the monthly email). `month` is already checked by parseMonth. */
+export async function buildReport(month: string) {
   const { from, to } = range(month);
   const cur = new Date();
   const partial = month === monthKey(cur);
@@ -201,11 +200,17 @@ reports.get("/", async (c) => {
   for (let d = new Date(Date.UTC(Number(firstMonth.slice(0, 4)), Number(firstMonth.slice(5)) - 1, 1)); monthKey(d) <= monthKey(cur) && months.length < 60; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push(monthKey(d));
   if (!months.includes(month)) months.push(month);
 
-  return c.json({
+  return {
     month, label: label(month), previous_label: label(prevMonth), partial, generated_at: Math.floor(Date.now() / 1000), months: months.reverse(),
     kpis: k, previous: pk, daily, categories, priorities, agents, requesters, assets, heatmap, history,
     smart: { summary, insights, clusters, spikes, slowest, forecast },
-  });
+  };
+}
+
+reports.get("/", async (c) => {
+  const month = parseMonth(c.req.query("month"));
+  if (!month) return c.json({ error: "Pick a month in the form 2026-10 (not in the future)." }, 400);
+  return c.json(await buildReport(month));
 });
 
 reports.get("/tickets.csv", async (c) => {

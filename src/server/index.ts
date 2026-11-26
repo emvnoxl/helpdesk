@@ -31,6 +31,7 @@ import { gifs, giphyOn, loadGiphyState } from "./gifs";
 import { announce, loadAnnouncement } from "./announce";
 import { loadTeams } from "./teams";
 import { loadAutomation, startAutomation } from "./automation";
+import { loadReportMail, startReportMail } from "./reportmail";
 import { seedForms } from "./forms";
 import { loadTemplates } from "./mailtemplates";
 import { verify } from "./verify";
@@ -150,6 +151,7 @@ await loadTeams();
 await loadAutomation();
 await seedForms();
 await loadTemplates();
+await loadReportMail();
 const prune = () => { pruneNotifications(); pruneAudit(config.auditRetentionDays); void pruneDrafts().catch(() => {}); };
 prune();
 const pruneTimer = setInterval(prune, 6 * 3600_000);
@@ -161,6 +163,7 @@ const stopInbound = startInbound();
 const stopBackups = startBackups();
 const stopUpdateChecks = startUpdateChecks();
 const stopAutomation = startAutomation();
+const stopReportMail = startReportMail();
 const server = serve({ fetch: app.fetch, port: config.port, hostname: "0.0.0.0" }, (info) => {
   console.log(`[server] Fortress Oil & Gas Helpdesk listening on http://localhost:${info.port}  (version ${BUILD.id}, data: ${config.dataDir})`);
   if (!config.companyDomain) console.warn("[server] COMPANY_EMAIL_DOMAIN is not set: normal users can use any email domain.");
@@ -176,6 +179,7 @@ function shutdown(signal: string) {
   stopBackups();
   stopUpdateChecks();
   stopAutomation();
+  stopReportMail();
   // A moment for the notice to reach the browsers, then close (the live streams would otherwise hold the server open).
   setTimeout(() => {
     server.close(() => {

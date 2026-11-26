@@ -98,6 +98,8 @@ const I = {
   net: "M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01",
   win: "M3 5l8-1v8H3zM13 3.8L21 3v9h-8zM3 13h8v8l-8-1zM13 13h8v8l-8-1z",
   id: "M4 5h16v14H4zM8 10a2 2 0 1 0 4 0 2 2 0 0 0-4 0M7 16c.6-1.5 2-2 3-2s2.4.5 3 2M15 9h3M15 13h3",
+  keyboard: "M3 7h18v10H3zM6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10",
+  mouse: "M7 4h10a2 2 0 0 1 2 2v8a7 7 0 0 1-14 0V6a2 2 0 0 1 2-2zM12 4v6M5 10h14",
   globe: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18",
   clock: "M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0",
   copy: "M9 9h10v10H9zM5 15V5h10",
@@ -214,7 +216,42 @@ const Row = ({ k, children }: { k: string; children: ReactNode }) => (
   <div className="flex items-baseline justify-between gap-3 py-1 text-sm"><dt className="shrink-0 text-neutral-500">{k}</dt><dd className="min-w-0 text-right font-medium">{children}</dd></div>
 );
 
+/* ---------- mice ---------- */
+
+/** USB vendor ids of the usual mouse makers (best effort; the id itself is always shown, so an unknown maker is still identifiable). */
+const USB_VENDORS: Record<string, string> = { "046D": "Logitech", "045E": "Microsoft", "413C": "Dell", "03F0": "HP", "17EF": "Lenovo", "1532": "Razer", "0B05": "ASUS", "04F2": "Chicony", "093A": "Pixart", "04CA": "Lite-On", "0461": "Primax", "1BCF": "Sunplus", "192F": "Avago", "046A": "Cherry", "05AC": "Apple", "1A81": "Holtek", "0414": "Giga-Byte", "258A": "SINO WEALTH", "30FA": "Instant Microelectronics" };
+export const mouseMaker = (m: { vid?: string }) => (m.vid ? USB_VENDORS[m.vid] ?? "" : "");
+export const mouseLabel = (m: { name?: string; vid?: string; connection?: string }) => [m.name, mouseMaker(m) && !new RegExp(mouseMaker(m), "i").test(m.name ?? "") ? `(${mouseMaker(m)})` : "", m.connection && m.connection !== "Other" ? `- ${m.connection}` : ""].filter(Boolean).join(" ");
+
+/** The three-letter code a monitor reports about its maker (its EDID). Best effort; an unknown code is shown as it is. */
+const PNP_MAKERS: Record<string, string> = { DEL: "Dell", HPN: "HP", HWP: "HP", SAM: "Samsung", SDC: "Samsung", GSM: "LG", LGD: "LG", AOC: "AOC", ACR: "Acer", AUS: "ASUS", ACI: "ASUS", BNQ: "BenQ", LEN: "Lenovo", PHL: "Philips", VSC: "ViewSonic", SNY: "Sony", NEC: "NEC", MSI: "MSI", IVM: "Iiyama", EIZ: "Eizo", BOE: "BOE", AUO: "AU Optronics", CMN: "Innolux", SHP: "Sharp", IVO: "InfoVision", TSB: "Toshiba", APP: "Apple", GBT: "Gigabyte", CPQ: "Compaq", FUS: "Fujitsu", MEI: "Panasonic", HKC: "HKC", KOA: "Koala", TCL: "TCL" };
+export const monitorMaker = (m: { maker?: string }) => (m.maker ? PNP_MAKERS[m.maker] ?? m.maker : "");
+/** A laptop's own panel reports no friendly name, and is small. */
+export const isBuiltInScreen = (m: { name?: string; inches?: number; connection?: string }) => m.connection === "Built-in" || (!m.name && (m.inches ?? 99) <= 18);
+export const monitorTitle = (m: { name?: string; maker?: string; code?: string; inches?: number; connection?: string }) => m.name || (isBuiltInScreen(m) ? "Built-in screen" : [monitorMaker(m), m.code].filter(Boolean).join(" ") || "Monitor");
+export const monitorLabel = (m: any) => [monitorTitle(m), m.inches ? `${m.inches}"` : "", m.year ? `${m.year}${m.week ? "-W" + m.week : ""}` : "", m.serial ? `S/N ${m.serial}` : ""].filter(Boolean).join(" ");
+export const deviceLabel = (m: any) => mouseLabel(m);
+
 /* ---------- the view ---------- */
+
+/** A mouse or keyboard list: name, how it connects, the maker and the USB id. */
+function Periph({ list }: { list?: any[] }) {
+  if (!list?.length) return <p className="text-sm text-neutral-500">None reported. Ask them to send the hardware details again to include it.</p>;
+  return (
+    <div className="space-y-2.5">
+      {list.map((m: any, i: number) => (
+        <div key={i} className="min-w-0 text-sm">
+          <b className="block truncate text-base leading-snug" title={m.name}>{m.name}</b>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-neutral-600">
+            {m.connection && <span className="rounded-full bg-fg/10 px-2 py-0.5 font-semibold">{m.connection === "Built-in" ? "Built-in" : m.connection}</span>}
+            {mouseMaker(m) && <span>{mouseMaker(m)}</span>}
+            {m.vid && <span className="font-mono text-neutral-500" title="USB vendor and product id">{m.vid}:{m.pid}</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function DeviceView({ d }: { d: DeviceData }) {
   const h = d.hardware, b = d.browser;
@@ -329,6 +366,38 @@ export function DeviceView({ d }: { d: DeviceData }) {
           {gpus.length ? gpus.map((g) => <b key={g} className="block truncate text-base leading-snug" title={g}>{tidy(g)}</b>) : <p className="text-sm text-neutral-500">Unknown</p>}
           {h?.gpus?.[0]?.driver && <div className="mt-1 text-xs text-neutral-500">Driver {h.gpus[0].driver}</div>}
         </Tile>
+
+        {h && (
+          <Tile icon={I.mouse} label="Mouse"><Periph list={h.mice} /></Tile>
+        )}
+
+        {h && (
+          <Tile icon={I.keyboard} label="Keyboard"><Periph list={h.keyboards} /></Tile>
+        )}
+
+        {h && (
+          <Tile icon={I.screen} label="Monitors" className="@2xl:col-span-2 @6xl:col-span-3">
+            {h.monitors?.length ? (
+              <div className="grid gap-3 @2xl:grid-cols-2 @6xl:grid-cols-3">
+                {h.monitors.map((m: any, i: number) => (
+                  <div key={i} className="flex min-w-0 items-center gap-3.5 rounded-xl border border-stone-200 p-3">
+                    <div className="grid h-12 w-[4.5rem] shrink-0 place-items-center rounded-md border-[3px] border-stone-400 bg-ink text-[10px] font-bold text-white/80" aria-hidden>{m.inches ? `${m.inches}"` : ""}</div>
+                    <div className="min-w-0 text-sm">
+                      <b className="block truncate text-base leading-snug" title={monitorTitle(m)}>{monitorTitle(m)}</b>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-neutral-600">
+                        {isBuiltInScreen(m) && <span className="rounded-full bg-fg/10 px-2 py-0.5 font-semibold">Built-in</span>}
+                        {m.connection && m.connection !== "Built-in" && <span className="rounded-full bg-fg/10 px-2 py-0.5 font-semibold">{m.connection}</span>}
+                        {monitorMaker(m) && !new RegExp(monitorMaker(m), "i").test(m.name ?? "") && <span>{monitorMaker(m)}</span>}
+                        {m.year ? <span>made {m.year}{m.week ? ` · week ${m.week}` : ""}</span> : null}
+                      </div>
+                      {m.serial && <div className="mt-0.5 font-mono text-xs text-neutral-500">S/N <span className="select-all">{m.serial}</span><Copy text={m.serial} label="monitor serial number" /></div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="text-sm text-neutral-500">None reported. Ask them to send the hardware details again to include it.</p>}
+          </Tile>
+        )}
 
         <Tile icon={I.net} label="Network">
           {h?.nics?.length ? (

@@ -41,7 +41,20 @@ export function typing(fromStaff: boolean, requesterId: number, data: string) {
 export const online = (key: string) => [...subs].some((s) => s.key === key) || Date.now() - (lastSeen.get(key) ?? 0) < 15_000;
 /** Is anyone from IT at the helpdesk right now? (Shown to normal users on Home.) */
 export const staffOnline = () => [...subs].some((s) => s.key.startsWith("s")) || [...lastSeen].some(([k, at]) => k.startsWith("s") && Date.now() - at < 15_000);
-const gone = (sub: Sub) => { if (subs.delete(sub)) lastSeen.set(sub.key, Date.now()); };
+/** Normal users who have the helpdesk open right now (a stream is open, or one closed a moment ago). Admin > People shows them. */
+export function onlineRequesters(): number[] {
+  const ids = new Set<number>();
+  for (const s of subs) if (s.key[0] === "r") ids.add(Number(s.key.slice(1)));
+  for (const [k, at] of lastSeen) if (k[0] === "r" && Date.now() - at < 15_000) ids.add(Number(k.slice(1)));
+  return [...ids];
+}
+/** Someone arrived or left: only admins' screens are nudged, and they re-ask /admin/people/online. */
+function presence() { for (const s of subs) if (s.admin) s.send("presence", "{}"); }
+const gone = (sub: Sub) => {
+  if (!subs.delete(sub)) return;
+  lastSeen.set(sub.key, Date.now());
+  if (sub.key[0] === "r") setTimeout(presence, 16_000).unref(); // after the 15 s grace, if they did not come back, they are offline
+};
 
 const MAX_SUBS = 1000;
 const MAX_LIFE_MS = 10 * 60_000; // then the browser reconnects, which re-checks the session
@@ -57,7 +70,9 @@ stream.get("/", (c) => {
   c.header("X-Accel-Buffering", "no"); // nginx: don't hold events back
   return streamSSE(c, async (s) => {
     const sub: Sub = { admin, key, send: (event, data) => void s.writeSSE({ event, data }).catch(() => {}) };
+    const arrived = key[0] === "r" && !online(key); // a reconnect every 10 minutes is not an arrival
     subs.add(sub);
+    if (arrived) presence();
     s.onAbort(() => gone(sub));
     await s.writeSSE({ event: "hello", data: helloData(), retry: 3000 });
     const until = Date.now() + MAX_LIFE_MS;
