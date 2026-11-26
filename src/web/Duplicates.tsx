@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { useNotify } from "./notify";
 import { Badge } from "./TicketView";
+import { Portal } from "./Portal";
 import { btn, card, field } from "./ui";
 
 /* Staff: "same problem as another ticket". Link a ticket to the main one, so IT answers once and everyone follows. */
@@ -75,6 +76,7 @@ export function DuplicatesCard({ base, id, role, ticket, duplicateOf, duplicates
       {!duplicateOf && !duplicates.length && !picking && <p className="text-xs text-neutral-600 dark:text-neutral-400">Several people reporting the same outage? Link them to one ticket: you answer once and everyone is told.</p>}
 
       {picking && (
+        <Portal>
         <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Mark as a duplicate" onKeyDown={(e) => e.key === "Escape" && close()}>
           <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-stone-200 bg-surface text-fg shadow-2xl" style={{ borderTop: "5px solid #00a859" }}>
             <div className="space-y-3 p-5">
@@ -107,6 +109,7 @@ export function DuplicatesCard({ base, id, role, ticket, duplicateOf, duplicates
             </div>
           </div>
         </div>
+        </Portal>
       )}
     </section>
   );

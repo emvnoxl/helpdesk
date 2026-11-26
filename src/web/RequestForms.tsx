@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "./api";
 import { CategoryIcon } from "./CategoryIcon";
 import { useNotify } from "./notify";
+import { Portal } from "./Portal";
 import { btn, card, field } from "./ui";
 
 /* Library > Request forms (admins): the few questions asked when someone picks a category on the new-ticket form. */
@@ -62,6 +63,7 @@ export function RequestForms({ onExpired }: { onExpired: () => void }) {
       </ul>
 
       {edit && (
+        <Portal>
         <div className="fixed inset-0 z-[95] grid place-items-center overflow-y-auto bg-black/50 p-4" role="dialog" aria-modal="true" aria-label={`Questions for ${edit.name}`} onKeyDown={(e) => e.key === "Escape" && setEdit(null)}>
           <div className="my-auto w-full max-w-2xl overflow-hidden rounded-2xl border border-stone-200 bg-surface text-fg shadow-2xl" style={{ borderTop: "5px solid #00a859" }}>
             <div className="space-y-3 p-5">
@@ -100,6 +102,7 @@ export function RequestForms({ onExpired }: { onExpired: () => void }) {
             </div>
           </div>
         </div>
+        </Portal>
       )}
     </div>
   );

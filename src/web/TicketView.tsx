@@ -140,16 +140,24 @@ export function TicketView({ id, role, base }: { id: number; role: Role; base: s
     const measure = () => {
       const el = rootRef.current;
       if (!el) return;
-      const top = el.getBoundingClientRect().top + window.scrollY;
+      // Where the box sits on the page, from layout positions: getBoundingClientRect() includes the page's slide-in animation, which made the
+      // first measurement too small and left a visible jump when the box was measured again after the animation.
+      let top = 0;
+      for (let n: HTMLElement | null = el; n; n = n.offsetParent as HTMLElement | null) top += n.offsetTop;
       const main = el.closest("main");
       const below = (main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 24) + (document.querySelector("footer")?.getBoundingClientRect().height ?? 0);
       setFit(Math.max(360, Math.floor(window.innerHeight - top - below - 2)));
     };
     window.scrollTo(0, 0);
     measure();
-    const late = window.setTimeout(measure, 450); // after the page-in animation has settled
+    // Keep measuring every frame while things above are still opening or sliding (the page animation, a banner), so the box follows them
+    // smoothly instead of jumping once at the end. Then stop: after that only a resize matters.
+    let raf = 0;
+    const until = performance.now() + 900;
+    const follow = () => { measure(); if (performance.now() < until) raf = requestAnimationFrame(follow); };
+    raf = requestAnimationFrame(follow);
     window.addEventListener("resize", measure);
-    return () => { window.clearTimeout(late); window.removeEventListener("resize", measure); };
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", measure); };
   }, [ready]);
 
   const count = d ? d.comments.length + d.events.length + pending.length : 0;
@@ -494,7 +502,7 @@ export function TicketView({ id, role, base }: { id: number; role: Role; base: s
         <>
         {panel && <MediaPanel staff={staff} tab={panel} onTab={setPanel} onEmoji={insertEmoji} onGif={(g) => void sendGif(g)} onClose={() => { setPanel(null); taRef.current?.focus(); }} />}
         <form
-          className={`relative border-t border-stone-200 p-3 ${internal ? "bg-amber-50" : "bg-surface"}`}
+          className={`relative border-t border-stone-200 p-3 ${internal ? "bg-amber-400/10" : "bg-surface"}`}
           onSubmit={(e) => {
             e.preventDefault();
             void send();
@@ -534,7 +542,7 @@ export function TicketView({ id, role, base }: { id: number; role: Role; base: s
             </div>
           )}
           <PendingTray items={drafts.items} onRemove={drafts.remove} />
-          <div className={`flex items-end gap-0.5 rounded-3xl border px-1.5 py-1 transition-shadow focus-within:border-brand-green focus-within:ring-2 focus-within:ring-brand-green/25 ${internal ? "border-amber-400 bg-amber-100/70" : "border-stone-300 bg-surface"}`}>
+          <div className={`flex items-end gap-0.5 rounded-3xl border px-1.5 py-1 transition-shadow focus-within:ring-2 ${internal ? "border-amber-400 bg-amber-400/15 focus-within:ring-amber-400/40" : "border-stone-300 bg-surface focus-within:border-brand-green focus-within:ring-brand-green/25"}`}>
             <button type="button" aria-label="Emoji" title="Emoji" aria-pressed={panel === "emoji"} onClick={() => setPanel((p) => (p === "emoji" ? null : "emoji"))}
               className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-green ${panel === "emoji" ? "bg-brand-green/25 text-fg" : "text-neutral-600 hover:bg-fg/10 hover:text-fg"}`}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="9.5" /><path d="M8 14.2c.9 1.4 2.3 2.2 4 2.2s3.1-.8 4-2.2" /><path d="M9 9.5h.01M15 9.5h.01" strokeWidth="2.6" /></svg>

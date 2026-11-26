@@ -1365,7 +1365,7 @@ const ST = "/api/staff/tickets";
   ok("an agent can't start one (404)", (await req("POST", "/api/admin/backups/run", undefined, GE)).code === 404);
   x = await req("POST", "/api/admin/backups/run", undefined, A);
   const file = x.json.file;
-  ok("an admin can back up now", x.code === 200 && x.json.ok === true && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(file) && x.json.bytes > 1000, JSON.stringify(x.json));
+  ok("an admin can back up now", x.code === 200 && x.json.ok === true && /^helpdesk-\d{8}-\d{4}(-\d+)?\.db\.gz$/.test(file) && x.json.bytes > 1000, JSON.stringify(x.json));
   x = await req("GET", "/api/admin/backups", undefined, A);
   ok("it is listed and the status is healthy", x.json.files.length === 1 && x.json.files[0].name === file && x.json.healthy === true && x.json.last_ok?.file === file);
   const dl = await fetch(BASE + "/api/admin/backups/" + file, { headers: { cookie: A.cookie } });
@@ -1690,7 +1690,7 @@ const ST = "/api/staff/tickets";
     updater.state = "idle";
     const bk0 = dbq("select count(*) n from audit_log where action = 'backup.ok'")[0].n;
     x = await req("POST", U + "/install", {}, A);
-    ok("install: starts, after taking a safety backup", x.code === 200 && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(x.json.backup) && dbq("select count(*) n from audit_log where action = 'backup.ok'")[0].n === bk0 + 1, JSON.stringify(x.json));
+    ok("install: starts, after taking a safety backup", x.code === 200 && /^helpdesk-\d{8}-\d{4}(-\d+)?\.db\.gz$/.test(x.json.backup) && dbq("select count(*) n from audit_log where action = 'backup.ok'")[0].n === bk0 + 1, JSON.stringify(x.json));
     ok("install: the helper was asked once, with the branch and the saved token", updater.started.length === 1 && updater.started[0].branch === "main" && updater.started[0].token === "ghp_pretend_token", JSON.stringify(updater.started));
     ok("install: it is in the activity log, without the token", dbq("select count(*) n from audit_log where action = 'system.update_install'")[0].n === 1 && !dbq("select group_concat(summary) s from audit_log")[0].s.includes("ghp_pretend_token"));
     x = await req("POST", U + "/install", {}, A);
@@ -2053,10 +2053,61 @@ const ST = "/api/staff/tickets";
   ok("start fresh: an agent gets 404", (await req("POST", "/api/admin/system/wipe", { confirm: "DELETE" }, GE)).code === 404);
   ok("start fresh: needs the word DELETE", (await req("POST", "/api/admin/system/wipe", { confirm: "yes" }, A)).code === 400 && dbq("select count(*) n from tickets")[0].n > 0);
   const w = await req("POST", "/api/admin/system/wipe", { confirm: "DELETE" }, A);
-  ok("start fresh: works and names the safety backup", w.code === 200 && /^helpdesk-\d{8}-\d{4}\.db\.gz$/.test(w.json.backup), JSON.stringify(w.json));
+  globalThis.__wipe = w.json; // the restore test below brings everything back from this backup
+  ok("start fresh: works and names the safety backup", w.code === 200 && /^helpdesk-\d{8}-\d{4}(-\d+)?\.db\.gz$/.test(w.json.backup), JSON.stringify(w.json));
   ok("…tickets, messages, devices, notifications and people are gone", ["tickets", "comments", "ticket_events", "devices", "notifications", "attachments", "recurring_tickets"].every((t) => dbq(`select count(*) n from ${t}`)[0].n === 0) && dbq("select count(*) n from users where role <> 'admin'")[0].n === 0);
   ok("…admins and settings stay", dbq("select count(*) n from users where role = 'admin'")[0].n === keepAdmins && dbq("select count(*) n from settings")[0].n >= keepSetting);
+  { // numbering starts again: the next person's first ticket is FG-0001 (it was FG-00NN before, because SQLite remembers the highest id)
+    const before = dbq("select seq from sqlite_sequence where name = 'tickets'");
+    ok("…the ticket counter is forgotten too", before.length === 0, JSON.stringify(before));
+    const fresh = jar();
+    await req("POST", "/api/identify", { name: "After Wipe", email: "after.wipe@" + DOMAIN, new_pin: "528394" }, fresh);
+    const t1 = await req("POST", "/api/tickets", { title: "First ticket after a fresh start", description: "Numbering should begin again at one.", category_id: 9 }, fresh);
+    const t2 = await req("POST", "/api/tickets", { title: "Second ticket after a fresh start", description: "And continue from there, as normal.", category_id: 9 }, fresh);
+    ok("…the first new ticket is FG-0001 and the next FG-0002", t1.code === 201 && t1.json.ref === "FG-0001" && t1.json.id === 1 && t2.json.ref === "FG-0002", JSON.stringify([t1.json, t2.json]));
+    ok("…and its messages and history start at one too", (await req("POST", "/api/tickets/1/comments", { body: "hello" }, fresh)).code === 201 && dbq("select min(id) m from comments")[0].m === 1 && dbq("select min(id) m from ticket_events")[0].m === 1);
+  }
   ok("…the admin is still signed in and the action is logged", (await req("GET", "/api/staff/me", undefined, A)).code === 200 && dbq("select count(*) n from audit_log where action = 'system.wipe'")[0].n === 1);
+}
+
+{ // Restore: undo the Start fresh above from the safety backup it took, through the same screens' API (this restarts the server)
+  const wipe = globalThis.__wipe, name = wipe.backup, want = wipe.removed.tickets;
+  const base = "/api/admin/backups";
+  let x = await req("GET", base + "/" + name + "/inspect", undefined, A);
+  ok("restore: a backup can be looked at first, with its counts next to today's", x.code === 200 && x.json.inspection.ok === true && x.json.inspection.tickets === want && x.json.inspection.users >= 2 && x.json.now.tickets < want, JSON.stringify(x.json));
+  ok("restore: nobody signed out can look (the agents were removed by Start fresh)", (await req("GET", base + "/" + name + "/inspect", undefined, jar())).code === 401);
+  ok("restore: a backup that is not there is a 404", (await req("GET", base + "/helpdesk-20000101-0000.db.gz/inspect", undefined, A)).code === 404 && (await req("POST", base + "/restore", { from: "backup:helpdesk-20000101-0000.db.gz", confirm: "RESTORE" }, A)).code === 404);
+  ok("restore: it needs the word RESTORE, and a clear choice", (await req("POST", base + "/restore", { from: "backup:" + name, confirm: "yes" }, A)).code === 400 && (await req("POST", base + "/restore", { from: "something", confirm: "RESTORE" }, A)).code === 400 && (await req("POST", base + "/restore", { from: "upload:../../etc/passwd", confirm: "RESTORE" }, A)).code === 400);
+  ok("restore: nobody signed out can restore", (await req("POST", base + "/restore", { from: "backup:" + name, confirm: "RESTORE" }, jar())).code === 401);
+  const send = async (session, bytes, fname) => {
+    const fd = new FormData(); fd.append("file", new Blob([bytes]), fname);
+    const res = await fetch(BASE + base + "/upload", { method: "POST", headers: { cookie: session.cookie }, body: fd });
+    const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    return { code: res.status, json };
+  };
+  x = await send(A, Buffer.from("this is not a backup, just some words"), "notes.txt");
+  ok("restore: an uploaded file that is not a backup is refused with a plain reason", x.code === 422 && typeof x.json.error === "string", JSON.stringify(x.json));
+  x = await send(A, fs.readFileSync(path.join(DATA, "backups", name)), name);
+  ok("restore: a real backup file can be uploaded, checked and kept aside", x.code === 200 && /^[a-f0-9]{24}$/.test(x.json.token) && x.json.inspection.tickets === want && fs.existsSync(path.join(DATA, "restore-staging", x.json.token + ".db")), JSON.stringify(x.json));
+  ok("restore: nothing has changed yet (still the empty, fresh helpdesk)", dbq("select count(*) n from tickets")[0].n < want);
+
+  x = await req("POST", base + "/restore", { from: "backup:" + name, confirm: "RESTORE" }, A);
+  ok("restore: accepted, a safety backup of the current state was taken first", x.code === 200 && x.json.ok === true && /^helpdesk-\d{8}-\d{4}(-\d+)?\.db\.gz$/.test(x.json.safety), JSON.stringify(x.json));
+  const safety = x.json.safety;
+  ok("restore: the helpdesk restarts itself to apply it", await new Promise((res) => { const t = setTimeout(() => res(false), 15000); server.once("exit", () => { clearTimeout(t); res(true); }); }));
+  server = start();
+  ok("restore: it comes back up", await waitUp());
+  ok("restore: the tickets are back (what the backup held)", dbq("select count(*) n from tickets")[0].n === want, String(dbq("select count(*) n from tickets")[0].n));
+  ok("restore: the database it replaced was kept aside, and nothing is left pending", fs.readdirSync(DATA).some((f) => f.startsWith("helpdesk.db.before-restore-")) && !fs.existsSync(path.join(DATA, "helpdesk.db.pending")) && !fs.existsSync(path.join(DATA, "restore-pending.json")) && !fs.existsSync(path.join(DATA, "restore-note.json")));
+  ok("restore: the activity log says what happened, and the admins are told", dbq("select count(*) n from audit_log where action = 'system.restore' and summary like '%' || ? || '%'", name)[0].n === 1 && dbq("select count(*) n from notifications where title = 'Restored from a backup'")[0].n >= 1);
+  ok("restore: it is remembered on the System page's data", !!dbq("select value from settings where key = 'last_restore'")[0]?.value);
+  const me = await req("GET", "/api/staff/me", undefined, A);
+  if (me.code === 200) {
+    x = await req("GET", base, undefined, A);
+    ok("restore: the safety backup is in the list, so this can be undone from the same screen, and the backup it came from is still there (never overwritten)", x.json.files.some((f) => f.name === safety) && x.json.files.some((f) => f.name === name) && safety !== name, JSON.stringify(x.json.files.map((f) => f.name)));
+  } else {
+    ok("restore: (the old session no longer matches the restored accounts, as expected after going back in time)", me.code === 401);
+  }
 }
 
 server.kill("SIGTERM");

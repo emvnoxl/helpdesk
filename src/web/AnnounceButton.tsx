@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "./api";
 import { useNotify } from "./notify";
 import { useSystem } from "./system";
+import { Portal } from "./Portal";
 import { btn, field } from "./ui";
 
 const LEVELS = [
@@ -20,15 +21,17 @@ const HOURS = [
 /** For IT: post or clear the banner every open screen shows ("Wi-Fi is down on floor 2, we are on it"). */
 export function AnnounceButton() {
   const sys = useSystem();
-  const { toast, confirm } = useNotify();
+  const { toast } = useNotify();
   const cur = sys.announcement;
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [level, setLevel] = useState<"info" | "warn" | "outage">("outage");
   const [dur, setDur] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [sure, setSure] = useState(false); // "clear it for everyone?", asked inside this dialog instead of in another one on top of it
 
   const show = () => {
+    setSure(false);
     setText(cur?.text ?? "");
     setLevel(cur?.level ?? "outage");
     setDur(0);
@@ -49,7 +52,6 @@ export function AnnounceButton() {
     setBusy(false);
   };
   const clear = async () => {
-    if (!(await confirm({ title: "Clear the banner?", body: "It disappears from every screen.", confirmLabel: "Clear it" }))) return;
     setBusy(true);
     try { await api("/staff/announcement", { method: "DELETE" }); toast("The banner is gone.", "success"); setOpen(false); } catch (e) { toast((e as Error).message, "error"); }
     setBusy(false);
@@ -61,7 +63,8 @@ export function AnnounceButton() {
         <span aria-hidden>📣</span> {cur ? "Banner is live" : "Announce"}
       </button>
       {open && (
-        <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Announcement" onKeyDown={(e) => e.key === "Escape" && setOpen(false)}>
+        <Portal>
+        <div className="fixed inset-0 z-[95] grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Announcement" onKeyDown={(e) => { if (e.key === "Escape") { if (sure) setSure(false); else setOpen(false); } }}>
           <div className="w-full max-w-md overflow-hidden rounded-2xl border border-stone-200 bg-surface text-fg shadow-2xl" style={{ borderTop: "5px solid #ffb400" }}>
             <div className="space-y-4 p-5">
               <div>
@@ -87,12 +90,23 @@ export function AnnounceButton() {
               </label>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-stone-200 bg-fg/5 px-5 py-3">
-              {cur && <button type="button" className="mr-auto rounded-lg border border-[#d92b33]/50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-700/10" disabled={busy} onClick={() => void clear()}>Clear the banner</button>}
-              <button type="button" className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-fg/10" onClick={() => setOpen(false)}>Cancel</button>
-              <button type="button" className={btn} disabled={busy || !text.trim()} onClick={() => void post()}>{cur ? "Update banner" : "Post banner"}</button>
+              {sure ? (
+                <>
+                  <span className="mr-auto text-sm font-semibold text-fg">Clear it for everyone?</span>
+                  <button type="button" autoFocus className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-fg/10" onClick={() => setSure(false)}>Keep it</button>
+                  <button type="button" className="rounded-lg bg-[#d92b33] px-4 py-2 text-sm font-bold text-white disabled:opacity-50" disabled={busy} onClick={() => void clear()}>Yes, clear it</button>
+                </>
+              ) : (
+                <>
+                  {cur && <button type="button" className="mr-auto rounded-lg border border-[#d92b33]/50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-700/10" disabled={busy} onClick={() => setSure(true)}>Clear the banner</button>}
+                  <button type="button" className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-semibold hover:bg-fg/10" onClick={() => setOpen(false)}>Cancel</button>
+                  <button type="button" className={btn} disabled={busy || !text.trim()} onClick={() => void post()}>{cur ? "Update banner" : "Post banner"}</button>
+                </>
+              )}
             </div>
           </div>
         </div>
+        </Portal>
       )}
     </>
   );

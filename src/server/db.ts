@@ -2,6 +2,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
+import { applyPendingRestore } from "./restore";
 
 /* SQLite through Node's built-in driver (no native add-ons to compile). The wrapper below deliberately keeps the
    prepare().bind().first()/all()/run() and batch() shape the queries were written in, so the SQL reads the same. */
@@ -127,5 +128,6 @@ function migrate(db: Database) {
   }
 }
 
+applyPendingRestore(config.dataDir); // a restore chosen on the System page takes effect here, at the start after it
 export const db = new Database(path.join(config.dataDir, "helpdesk.db"));
 migrate(db);

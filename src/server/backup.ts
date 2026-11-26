@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { constants, copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { constants, copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { Readable } from "node:stream";
@@ -8,16 +8,20 @@ import { type AppEnv } from "./auth";
 import { audit, SYSTEM } from "./audit";
 import { changed } from "./bus";
 import { config } from "./config";
-import { db } from "./db";
+import { db, SCHEMA_VERSION } from "./db";
+import { bodyLimit } from "hono/body-limit";
+import { randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { cleanStaging, inspectDb, stage, stagingDir, writePending } from "./restore";
 import { getSetting, putSetting } from "./sla";
 
 /* Backups. Every night (BACKUP_HOUR, UTC = Ghana time) the database is copied with SQLite's VACUUM INTO (a consistent copy while the app
    runs), compressed, and the newest BACKUP_KEEP are kept. The uploads folder is mirrored next to them (files never change once written,
    so only new ones are copied). Everything goes to BACKUP_DIR: by default a folder inside the data volume, which protects against a bad
    update or a deleted ticket but NOT against losing the disk, so point BACKUP_DIR at another disk or a NAS share, or download copies
-   from Admin > System. Restoring is deliberate and manual: see the README. */
+   from Admin > System. Restoring is done from the same page (Restore next to a backup, or from a file): see restore.ts. */
 
-const NAME = /^helpdesk-\d{8}-\d{4}\.db\.gz$/;
+const NAME = /^helpdesk-\d{8}-\d{4}(-\d+)?\.db\.gz$/; // the optional -2, -3 is for several in the same minute: a backup is never overwritten
 const UPLOADS = path.join(config.dataDir, "uploads");
 
 export interface BackupStatus { at: number; ok: boolean; file?: string; bytes?: number; seconds?: number; error?: string }
@@ -35,7 +39,7 @@ export function listBackups() {
     return readdirSync(config.backup.dir)
       .filter((f) => NAME.test(f))
       .map((name) => { const st = statSync(path.join(config.backup.dir, name)); return { name, bytes: st.size, at: Math.floor(st.mtimeMs / 1000) }; })
-      .sort((a, b) => b.name.localeCompare(a.name));
+      .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name)); // newest first (by when it was written: same-minute names carry a suffix)
   } catch { return []; }
 }
 
@@ -50,7 +54,8 @@ export async function runBackup(trigger: "schedule" | "manual", who: { id: numbe
   let status: BackupStatus;
   try {
     mkdirSync(dir, { recursive: true });
-    const base = `helpdesk-${stamp()}`;
+    let base = `helpdesk-${stamp()}`;
+    for (let n = 2; existsSync(path.join(dir, base + ".db.gz")); n++) base = `helpdesk-${stamp()}-${n}`;
     const tmp = path.join(dir, base + ".tmp.db");
     const out = path.join(dir, base + ".db.gz");
     rmSync(tmp, { force: true });
@@ -162,3 +167,106 @@ backups.get("/:name", async (c) => {
     "Cache-Control": "no-store",
   });
 });
+
+/* ---- Restore (see restore.ts). Admin only, like everything here. ---- */
+let restoring = false;
+const UPLOAD_MAX = 512 * 1024 * 1024;
+
+/** What is in a stored backup, for the "are you sure" screen. Nothing is changed. */
+backups.get("/:name/inspect", async (c) => {
+  const name = c.req.param("name");
+  if (!NAME.test(name) || !existsSync(path.join(config.backup.dir, name))) return c.json({ error: "not found" }, 404);
+  let staged = "";
+  try {
+    staged = await stage(config.dataDir, path.join(config.backup.dir, name));
+    return c.json({ name, at: Math.floor(statSync(path.join(config.backup.dir, name)).mtimeMs / 1000), inspection: inspectDb(staged, SCHEMA_VERSION), now: await nowCounts() });
+  } catch (e) {
+    return c.json({ name, inspection: { ok: false, error: (e as Error).message } });
+  } finally {
+    if (staged) rmSync(staged, { force: true });
+  }
+});
+
+async function nowCounts() {
+  const n = async (sql: string) => (await db.prepare(sql).first<{ n: number }>())?.n ?? 0;
+  return { users: await n("SELECT COUNT(*) AS n FROM users"), tickets: await n("SELECT COUNT(*) AS n FROM tickets"), comments: await n("SELECT COUNT(*) AS n FROM comments") };
+}
+
+// A backup file from somewhere else (downloaded earlier, or from another machine): checked and kept aside until the admin confirms.
+backups.post("/upload", bodyLimit({ maxSize: UPLOAD_MAX, onError: (c) => c.json({ error: "That file is too big to be a helpdesk backup." }, 413, { Connection: "close" }) }), async (c) => {
+  cleanStaging(config.dataDir);
+  const form = await c.req.parseBody().catch(() => null);
+  const file = form?.file;
+  if (!file || typeof file === "string" || file.size === 0) return c.json({ error: "Choose a backup file (.db.gz)." }, 400);
+  mkdirSync(stagingDir(config.dataDir), { recursive: true });
+  const raw = path.join(stagingDir(config.dataDir), randomBytes(12).toString("hex") + ".upload");
+  let staged = "";
+  try {
+    await writeFile(raw, Buffer.from(await file.arrayBuffer()));
+    staged = await stage(config.dataDir, raw);
+    const inspection = inspectDb(staged, SCHEMA_VERSION);
+    if (!inspection.ok) { rmSync(staged, { force: true }); return c.json({ error: inspection.error }, 422); }
+    return c.json({ token: path.basename(staged, ".db"), name: file.name, inspection, now: await nowCounts() });
+  } catch (e) {
+    if (staged) rmSync(staged, { force: true });
+    return c.json({ error: (e as Error).message }, 422);
+  } finally {
+    rmSync(raw, { force: true });
+  }
+});
+
+// { from: "backup:<name>" | "upload:<token>", confirm: "RESTORE" }
+backups.post("/restore", async (c) => {
+  const who = c.get("user");
+  const b = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+  if (b.confirm !== "RESTORE") return c.json({ error: "Type RESTORE to confirm." }, 400);
+  const from = typeof b.from === "string" ? b.from : "";
+  if (restoring) return c.json({ error: "A restore is already under way." }, 409);
+  let staged = "";
+  let label = "";
+  let uploadsFrom: string | null = null;
+  if (from.startsWith("backup:")) {
+    const name = from.slice(7);
+    if (!NAME.test(name) || !existsSync(path.join(config.backup.dir, name))) return c.json({ error: "That backup is not there any more." }, 404);
+    label = name;
+    const mirror = path.join(config.backup.dir, "uploads");
+    uploadsFrom = existsSync(mirror) ? mirror : null;
+    try { staged = await stage(config.dataDir, path.join(config.backup.dir, name)); } catch (e) { return c.json({ error: (e as Error).message }, 422); }
+  } else if (from.startsWith("upload:") && /^[a-f0-9]{24}$/.test(from.slice(7))) {
+    staged = path.join(stagingDir(config.dataDir), from.slice(7) + ".db");
+    if (!existsSync(staged)) return c.json({ error: "That uploaded file has expired. Upload it again." }, 404);
+    label = "an uploaded file";
+  } else {
+    return c.json({ error: "Choose a backup to restore." }, 400);
+  }
+  const insp = inspectDb(staged, SCHEMA_VERSION);
+  if (!insp.ok) { rmSync(staged, { force: true }); return c.json({ error: insp.error }, 422); }
+  restoring = true;
+  // Always keep today's state first, so a restore can itself be undone from this same list.
+  const safety = await runBackup("manual", { id: who.id, name: who.name, role: who.role });
+  if (!safety.ok) { restoring = false; rmSync(staged, { force: true }); return c.json({ error: `Nothing was changed: the safety backup of the current state failed (${safety.error}).` }, 500); }
+  writePending(config.dataDir, staged, { from: label, by: who.name, at: Math.floor(Date.now() / 1000), safety: safety.file ?? null, uploadsFrom });
+  await audit(c, "system.restore_requested", "admin", `Restore from ${label} requested (safety backup ${safety.file}); the helpdesk is restarting`);
+  // Answer first, then restart through the normal shutdown path (open screens say "being updated" and come back by themselves).
+  setTimeout(() => process.emit("SIGTERM" as any), 400);
+  return c.json({ ok: true, safety: safety.file, restarting: true });
+});
+
+/** After a restore: say so in the activity log and tell the admins (the restored database has no memory of it). */
+export async function finishRestore() {
+  const note = path.join(config.dataDir, "restore-note.json");
+  if (!existsSync(note)) return;
+  try {
+    const m = JSON.parse(readFileSync(note, "utf8")) as { from: string; by: string; kept_as: string | null; safety: string | null; files: number };
+    await audit(null, "system.restore", "admin", `Restored the helpdesk from ${m.from} (asked for by ${m.by}). The database before it is kept as ${m.kept_as ?? "n/a"}${m.safety ? `; a backup of it is also in the list as ${m.safety}` : ""}`, { who: SYSTEM });
+    await db
+      .prepare("INSERT INTO notifications (user_id, ticket_id, kind, title, body, created_at) SELECT id, NULL, 'alert', 'Restored from a backup', ?, unixepoch() FROM users WHERE role = 'admin' AND active = 1")
+      .bind(`From ${m.from}, asked for by ${m.by}.`.slice(0, 140))
+      .run();
+    await putSetting("last_restore", JSON.stringify({ ...m, at: Math.floor(Date.now() / 1000) }));
+  } catch (e) {
+    console.error("[restore] could not write the note:", (e as Error).message);
+  } finally {
+    rmSync(note, { force: true });
+  }
+}

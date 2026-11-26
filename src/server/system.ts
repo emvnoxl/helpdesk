@@ -127,6 +127,9 @@ system.post("/wipe", async (c) => {
   try {
     for (const t of WIPE_TABLES) removed[t] = Number(db.raw.prepare(`DELETE FROM ${t}`).run().changes);
     removed.users = Number(db.raw.prepare("DELETE FROM users WHERE role <> 'admin'").run().changes);
+    // Numbers start again too. A ticket's number is its row id, and SQLite remembers the highest id ever used for AUTOINCREMENT tables, so
+    // emptying the table is not enough: forget that memory for everything that was emptied (the next ticket is FG-0001 again).
+    db.raw.prepare(`DELETE FROM sqlite_sequence WHERE name IN (${WIPE_TABLES.map(() => "?").join(",")})`).run(...WIPE_TABLES);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

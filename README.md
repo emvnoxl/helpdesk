@@ -106,6 +106,10 @@ line for every call (who called, how long, or that it was missed) and the activi
 The easy way is the built-in Caddy (next section). Or put nginx, Caddy or Traefik in front yourself. Then in `.env` set `APP_URL=https://helpdesk.yourcompany.com` and
 `TRUST_PROXY=1`. (Staff sessions use `Secure` cookies once `APP_URL` is https.)
 
+### Restoring a backup
+Admin > System > Backups. Press **Restore…** next to the backup you want (or **Restore from a file…** for one you saved earlier, even from another computer). The helpdesk checks it, shows how many tickets and people it holds compared with now, and asks you to type RESTORE. Then it takes a backup of today's state first, restarts for about a minute, and comes back with the old data. Your previous state stays in the list, so a restore can be undone the same way; the old database file is also kept in the data folder as `helpdesk.db.before-restore-…`. Uploaded files are never deleted.
+A backup from another computer was encrypted with that computer's key, so saved email and Microsoft passwords may need entering again. If the helpdesk will not start at all, the manual steps under *If the helpdesk will not start at all* on that page still work.
+
 ### Alerts in Microsoft Teams, automation and request forms
 All three are set up in the admin pages, no `.env` needed:
 - **Teams:** System > Alerts. In Teams open the channel > *More options* > **Workflows** > "Post to a channel when a webhook request is received", copy the address it gives you, paste it there, choose what to post (new tickets, missed targets, call requests, "not fixed"), and press **Send a test message**.

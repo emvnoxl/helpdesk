@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { initSystem, isStale, useSystem } from "./system";
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -19,6 +19,19 @@ export function UpdateNotice() {
   }, [s.maintenance, s.announcement?.until]);
   // IT's banner (an outage, a warning, a notice) hides itself when its time is up, even if no message arrives to say so.
   const ann = s.announcement && (!s.announcement.until || now / 1000 < s.announcement.until) ? s.announcement : null;
+  // When the banner is cleared (or runs out) it must stay in the page for a moment so it can fade: the SAME element has to survive the render in
+  // which it was cleared (an effect that re-adds it a frame later would create a new element, which cannot animate away). So the last banner is
+  // remembered while rendering, and forgotten by a timer once the fade is over.
+  const last = useRef<typeof ann>(null);
+  const [, bump] = useState(0);
+  if (ann) last.current = ann;
+  useEffect(() => {
+    if (ann || !last.current) return;
+    const t = window.setTimeout(() => { last.current = null; bump((n) => n + 1); window.dispatchEvent(new Event("resize")); }, 520);
+    return () => window.clearTimeout(t);
+  }, [ann]);
+  const shown = ann ?? last.current;
+  const leaving = !ann && !!shown;
 
   // The office display has nobody to press "Reload": it reloads itself shortly after an update.
   useEffect(() => {
@@ -29,22 +42,25 @@ export function UpdateNotice() {
 
   // The banner sits above the page and pushes it down (it does not cover the header). Screens that size themselves to the window
   // (the ticket page) re-measure on "resize".
-  const visible = s.restarting || stale || !!s.maintenance || !!ann;
+  const visible = s.restarting || stale || !!s.maintenance || !!shown;
   useEffect(() => { window.dispatchEvent(new Event("resize")); }, [visible]);
 
   if (s.restarting) return <Restarting />;
 
   const m = s.maintenance;
-  if (!stale && !m && !ann) return null;
+  if (!stale && !m && !shown) return null;
   const left = m ? Math.round((m.at - now) / 60_000) : 0;
-  const style = ann?.level === "outage" ? { background: "#d92b33", color: "#fff" } : ann?.level === "warn" ? { background: "#ffb400", color: "#0b0b0b" } : { background: "#0b0b0b", color: "#fff" };
   return (
     <>
-    {ann && (
-      <div role={ann.level === "outage" ? "alert" : "status"} className="relative z-[89] flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-2 text-center text-sm font-semibold" style={style}>
-        <span aria-hidden>{ann.level === "outage" ? "⚠️" : ann.level === "warn" ? "🟡" : "📣"}</span>
-        <span>{ann.text}</span>
-        <span className="text-xs font-normal opacity-80">{ann.by} · {clock(ann.at * 1000)}</span>
+    {shown && (
+      <div key={shown.at} className={`ann-wrap relative z-[89] ${leaving ? "ann-leaving" : ""}`} aria-hidden={leaving || undefined}>
+      <div className="ann-clip">
+      <div role={shown.level === "outage" ? "alert" : "status"} className={`ann ann-${shown.level} flex flex-wrap items-center justify-center gap-x-3 gap-y-0.5 px-4 py-2 text-center text-sm font-semibold`}>
+        {shown.level === "warn" ? <span className="ann-icon" aria-hidden><span>🟡</span></span> : <span className="ann-chip"><i aria-hidden />{shown.level === "outage" ? "Problem" : "Notice"}</span>}
+        <span>{shown.text}</span>
+        <span className="text-xs font-normal opacity-80">{shown.by} · {clock(shown.at * 1000)}</span>
+      </div>
+      </div>
       </div>
     )}
     {(stale || m) && <div role="status" className="relative z-[90] flex flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 py-2 text-center text-sm font-semibold"

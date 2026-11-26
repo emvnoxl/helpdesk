@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, api } from "./api";
 import { useLive } from "./live";
 import { useNotify } from "./notify";
@@ -7,6 +7,7 @@ import { UpdatesCard, useUpdateInfo } from "./UpdatesCard";
 import { ChatSetup, useGifInfo } from "./ChatSetup";
 import { TeamsSetup, useTeamsInfo } from "./TeamsSetup";
 import { AutomationSetup, useAutomationInfo } from "./AutomationSetup";
+import { RestoreDialog, type RestoreTarget } from "./RestoreDialog";
 import { AddressSetup, MailSetup, secondaryBtn, SsoSetup, type Settings } from "./SystemSetup";
 
 /* Admin > System. One calm page: a short list on the left (Overview, Updates, Sign-in, Email, Address, Backups, Reset), each with a small
@@ -92,6 +93,8 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [to, setTo] = useState("");
+  const [restore, setRestore] = useState<RestoreTarget | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
 
   const go = (s: Section) => { setSection(s); try { localStorage.setItem("fortress-helpdesk:system-section", s); } catch { /* optional */ } };
 
@@ -126,6 +129,19 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
     try { const r = await api<Status>("/admin/backups/run", { method: "POST" }); toast(`${r.file} (${size(r.bytes ?? 0)})`, "success", "Backup done"); }
     catch (e) { toast((e as Error).message, "error", "Backup failed"); }
     await load();
+    setBusy(false);
+  };
+  // A backup file from somewhere else: checked on the server, then the same "are you sure" screen.
+  const pickFile = async (f: File | undefined) => {
+    if (!f) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const r = await api<{ token: string; name: string; inspection: RestoreTarget["inspection"]; now: RestoreTarget["now"] }>("/admin/backups/upload", { method: "POST", body: fd });
+      setRestore({ from: "upload:" + r.token, title: r.name || f.name, inspection: r.inspection, now: r.now, upload: true });
+    } catch (e) { toast((e as Error).message, "error", "That file can't be restored"); }
+    if (picker.current) picker.current.value = "";
     setBusy(false);
   };
   const wipe = async () => {
@@ -301,20 +317,32 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
             <li key={f.name} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3.5 py-2.5 text-sm">
               <span className="font-mono text-fg">{f.name}</span>
               <span className={muted}>{when(f.at)} · {size(f.bytes)}</span>
-              <a className="ml-auto font-semibold text-ok underline-offset-2 hover:underline" href={`/api/admin/backups/${f.name}`} download>Download</a>
+              <span className="ml-auto flex items-center gap-3">
+                <button type="button" className="rounded-lg border border-stone-300 px-3 py-1 text-xs font-bold text-fg hover:bg-fg/10" disabled={busy} onClick={() => setRestore({ from: "backup:" + f.name, title: f.name })}>Restore…</button>
+                <a className="font-semibold text-ok underline-offset-2 hover:underline" href={`/api/admin/backups/${f.name}`} download>Download</a>
+              </span>
             </li>
           ))}
         </ul>
       )}
+      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-fg/20 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-fg">Restore</p>
+          <p className={muted}>Press <b className="text-fg">Restore…</b> next to a backup above, or restore a backup file you saved earlier (even from another computer).</p>
+        </div>
+        <input ref={picker} type="file" accept=".gz,.db,application/gzip" className="hidden" onChange={(e) => void pickFile(e.target.files?.[0])} aria-label="Choose a backup file" />
+        <button type="button" className={secondaryBtn} disabled={busy} onClick={() => picker.current?.click()}>Restore from a file…</button>
+      </div>
       <details className={`mt-3 ${muted}`}>
-        <summary className="cursor-pointer font-semibold text-fg">How to restore</summary>
+        <summary className="cursor-pointer font-semibold text-fg">If the helpdesk will not start at all</summary>
         <ol className="mt-2 list-decimal space-y-1 pl-5">
-          <li>Stop the helpdesk: <code className="rounded bg-fg/10 px-1">docker compose stop helpdesk</code></li>
+          <li>Normally you do not need this: use <b className="text-fg">Restore…</b> above. Only if the helpdesk cannot start: stop it with <code className="rounded bg-fg/10 px-1">docker compose stop helpdesk</code></li>
           <li>Unzip the backup you want (<code className="rounded bg-fg/10 px-1">gunzip</code> or 7-Zip) and replace <code className="rounded bg-fg/10 px-1">helpdesk.db</code> in the data folder with it. Delete <code className="rounded bg-fg/10 px-1">helpdesk.db-wal</code> and <code className="rounded bg-fg/10 px-1">helpdesk.db-shm</code> if they exist.</li>
           <li>Copy the files from the backup's <code className="rounded bg-fg/10 px-1">uploads</code> folder back into the data folder's <code className="rounded bg-fg/10 px-1">uploads</code> folder.</li>
           <li>Start it again: <code className="rounded bg-fg/10 px-1">docker compose start helpdesk</code></li>
         </ol>
       </details>
+      {restore && <RestoreDialog target={restore} onClose={() => setRestore(null)} />}
     </section>
   );
 
@@ -323,7 +351,7 @@ export function SystemPanel({ onExpired }: { onExpired: () => void }) {
       <h2 className="text-base font-bold text-fg">Start fresh</h2>
       <p className={`mt-1 ${muted}`}>
         Deletes every ticket, message, attachment, computer, notification, the activity log, recurring tickets, and every person except the admins.
-        Keeps your settings (address, email, Microsoft 365), help articles, saved replies, checklists and admin accounts. A backup is taken first, so it can be undone by restoring it.
+        Ticket numbers start again from FG-0001. Keeps your settings (address, email, Microsoft 365), help articles, saved replies, checklists and admin accounts. A backup is taken first, so it can be undone by restoring it.
       </p>
       <div className="mt-3 flex flex-wrap items-end gap-3">
         <input className="w-48 rounded-lg border border-fg/20 bg-surface px-3 py-2 text-sm text-fg placeholder:text-neutral-500" placeholder="Type DELETE" value={wipeText} onChange={(e) => setWipeText(e.target.value)} aria-label="Type DELETE to enable the button" autoComplete="off" />
