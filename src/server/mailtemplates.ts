@@ -6,7 +6,7 @@ import { type AppEnv } from "./auth";
 import { audit } from "./audit";
 import { config, sessionSecret } from "./config";
 import { DEFAULT_LOGO_PNG_B64 } from "./emailLogo";
-import { LOCK_PNG_B64, SHIELD_PNG_B64 } from "./emailIcons";
+import { BADGE_PNG_B64 } from "./emailIcons";
 import { BRAND_FIELDS, DEFAULT_BRAND, DEFAULT_KINDS, KINDS, diff, merge, sampleMail, validate, type Ctx, type Kind, type Mail, type Templates } from "./mailrender";
 import { getSetting, putSetting } from "./sla";
 
@@ -40,7 +40,7 @@ export const setMailSender = (fn: (m: Mail) => Promise<string>) => { send = fn; 
 /** The preview sits in a sandboxed frame that cannot fetch cid: pictures, so it gets them as data: addresses. */
 export const previewImages = () => ({
   previewLogo: "data:image/png;base64," + logoBytes().toString("base64"),
-  previewIcons: { shield: "data:image/png;base64," + SHIELD_PNG_B64, lock: "data:image/png;base64," + LOCK_PNG_B64 },
+  previewIcons: { badge: "data:image/png;base64," + BADGE_PNG_B64 },
 });
 
 const isKind = (k: unknown): k is Kind => KINDS.some((x) => x.id === k);

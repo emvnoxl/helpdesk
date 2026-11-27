@@ -204,7 +204,7 @@ export interface Ctx {
   secret: string;         // signs the "verify this email" links
   preview?: boolean;      // the admin's live preview
   previewLogo?: string;   // ...where the logo is a data: address (the preview sits in a sandboxed frame that cannot fetch it, and cid: only works in a mail program)
-  previewIcons?: { shield: string; lock: string }; // ...and the two small icons likewise
+  previewIcons?: { badge: string }; // ...and the badge likewise
   now?: number;           // seconds (tests)
 }
 export interface Mail { to: string; subject: string; html: string; text: string; logo?: boolean; icons?: boolean }
@@ -226,44 +226,30 @@ export function verifyUrl(x: Ctx, o: { to: string; kind: string; ref?: string })
 const KIND_LABEL: Record<string, string> = { created: "Ticket received", reply: "New reply", status: "Status update", assigned: "Ticket update", digest: "Ticket updates", welcome: "Welcome", staff: "IT update", report: "Monthly report", test: "Test email" };
 
 /** One branded wrapper for every email: the three brand colours as a stripe, the logo or the name and a badge saying what this is, the content, the signature, and a
-    "verified message" card (shield, who sent it, to whom, the safety line, and a link that proves it on the helpdesk itself). */
+    "verified message" card (verified badge, who sent it, to whom, the safety line, and a link that proves it on the helpdesk itself). */
 export function shell(x: Ctx, blocks: Block[], foot: string, o: { to: string; kind: string; ref?: string }): { html: string; text: string; logo: boolean; icons: boolean } {
   const b = x.t.brand;
   const logo = b.show_logo;
   const verify = verifyUrl(x, o);
   const where = x.appUrl ? host(x.appUrl) : "";
   const kindLabel = KIND_LABEL[o.kind] ?? "Message";
-  const shield = x.preview && x.previewIcons ? x.previewIcons.shield : "cid:fgshield";
-  const lock = x.preview && x.previewIcons ? x.previewIcons.lock : "cid:fglock";
+  const badge = x.preview && x.previewIcons ? x.previewIcons.badge : "cid:fgbadge";
   const head = logo
     ? `<img src="${x.preview && x.previewLogo ? x.previewLogo : "cid:fglogo"}" alt="${esc(b.name)}" height="46" style="display:block;height:46px;width:auto;border:0;outline:none;text-decoration:none">`
     : `<p${ed(x, "brand.name")} style="margin:0;font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#007a3d;${F}">${esc(b.name)}</p>`;
   const sign =
     `<p${ed(x, "brand.signoff")} style="margin:22px 0 2px;font-size:15px;line-height:1.5;color:#23272a;${F}">${esc(b.signoff)}</p>` +
-    `<p${ed(x, "brand.team")} style="margin:0 0 ${b.contact || x.preview ? "4" : "8"}px;font-size:15px;line-height:1.5;color:#0b0b0b;${F}"><b>${esc(b.team)}</b></p>` +
+    `<p${ed(x, "brand.team")} style="margin:0 0 ${b.contact || x.preview ? "4" : "8"}px;font-size:15px;line-height:1.5;color:#0b0b0b;${F}"><b>${esc(b.team)}</b> <img src="${badge}" width="16" height="16" alt="Verified" style="width:16px;height:16px;border:0;vertical-align:-3px"></p>` +
     (b.contact ? `<p${ed(x, "brand.contact")} style="margin:0 0 8px;font-size:13px;line-height:1.55;color:#5a6166;${F}">${rich(b.contact)}</p>` : slot(x, "brand.contact", "Add how to reach IT"));
 
-  const rowS = "padding:7px 0;border-top:1px solid #d5ebdf;font-size:13px;line-height:1.45;" + F;
-  const detail = (k: string, v: string) => `<tr><td width="84" valign="top" style="${rowS}color:#5b7466;font-weight:600">${k}</td><td valign="top" style="${rowS}color:#14352a;font-weight:700;word-break:break-word">${v}</td></tr>`;
+  // The "this is genuine" card, kept small: the verified badge, one line saying who it is from, the admin's safety line, and the proof link.
   const genuine =
-    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;background:#f2faf6;border:1px solid #c6e6d6;border-radius:16px">` +
-    // who says so
-    `<tr><td style="padding:20px 22px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="62" valign="top"><img src="${shield}" width="48" height="48" alt="Verified" style="display:block;width:48px;height:48px;border:0"></td>` +
-    `<td valign="middle" style="${F}"><div style="font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#007a3d">Verified message</div>` +
-    `<div style="font-size:16px;font-weight:700;line-height:1.35;color:#14352a;margin-top:3px">A genuine message from the ${esc(b.team)}</div>` +
-    `<div style="font-size:13px;line-height:1.5;color:#3d5a4c;margin-top:2px">Sent by the ${esc(b.name)}${where ? ` (${esc(where)})` : ""}</div></td></tr></table></td></tr>` +
-    // the facts
-    `<tr><td style="padding:8px 22px 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">${detail("Sent to", esc(o.to))}${o.ref ? detail("About", esc(o.ref)) : ""}${detail("Message", esc(kindLabel))}</table></td></tr>` +
-    // what IT will never ask
-    (b.trust
-      ? `<tr><td style="padding:12px 22px 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td width="26" valign="top" style="padding-top:3px"><img src="${lock}" width="16" height="16" alt="" style="display:block;width:16px;height:16px;border:0"></td><td valign="top"><div${ed(x, "brand.trust")} style="font-size:13px;line-height:1.6;color:#1f3d2d;${F}">${rich(b.trust)}</div></td></tr></table></td></tr>`
-      : x.preview ? `<tr><td style="padding:12px 22px 0">${slot(x, "brand.trust", "Add a safety line")}</td></tr>` : "") +
-    // the proof
-    (verify
-      ? `<tr><td style="padding:14px 22px 20px;${F}"><a href="${esc(verify)}" style="display:inline-block;border:2px solid #00a859;color:#007a3d;background:#ffffff;font-weight:700;font-size:13px;text-decoration:none;padding:9px 16px;border-radius:9px">&#128274;&#xFE0E; Verify this email</a>` +
-        `<div style="font-size:12px;line-height:1.55;color:#3d5a4c;margin-top:9px">${where ? `Or type <b>${esc(where)}</b> into your browser yourself instead of using a link.` : ""}</div></td></tr>`
-      : `<tr><td style="padding:0 22px 20px;font-size:0;line-height:0">&nbsp;</td></tr>`) +
-    "</table>";
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:separate;background:#f2faf6;border:1px solid #c6e6d6;border-radius:14px"><tr>` +
+    `<td width="58" valign="top" style="padding:16px 0 16px 18px"><img src="${badge}" width="40" height="40" alt="Verified" style="display:block;width:40px;height:40px;border:0"></td>` +
+    `<td valign="middle" style="padding:16px 18px 16px 14px;${F}"><div style="font-size:15px;font-weight:700;line-height:1.4;color:#14352a">A genuine message from the ${esc(b.team)}</div>` +
+    (b.trust ? `<div${ed(x, "brand.trust")} style="font-size:12.5px;line-height:1.55;color:#3d5a4c;margin-top:4px">${rich(b.trust)}</div>` : slot(x, "brand.trust", "Add a safety line")) +
+    (verify ? `<div style="margin-top:10px"><a href="${esc(verify)}" style="font-size:12.5px;font-weight:700;color:#007a3d;text-decoration:none;border-bottom:1.5px solid #00a859;padding-bottom:1px">Verify this email &#8594;</a></div>` : "") +
+    "</td></tr></table>";
 
   const html =
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="x-apple-disable-message-reformatting"><meta name="color-scheme" content="light"><title>${esc(b.name)}</title>` +
